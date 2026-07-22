@@ -23,7 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from . import reporting
+from . import grafana, reporting
 from .auth import (
     LEASE_TTL,
     AuthError,
@@ -34,8 +34,9 @@ from .auth import (
     new_secret,
 )
 from .config import Settings, settings
-from .db import init_db, session
-from .github import GitHubApp, GitHubError, NullGitHubApp
+from .db import init_db
+from .deps import attestor, config, github, session, verifier
+from .github import GitHubApp, NullGitHubApp
 from .models import ApiToken, Context, Lease, Measurement, Report, Trust, series_key
 from .queries import baseline_points, head_series, machine_scatter, run_points
 from .ratelimit import Limit, RateLimited, consume, purge
@@ -72,51 +73,6 @@ async def _validation_error(_request: Request, exc: RequestValidationError):
             ]
         },
     )
-
-
-_verifier: Verifier | None = None
-_github: GitHubApp | None = None
-
-
-def config() -> Settings:
-    return settings()
-
-
-def verifier(cfg: Annotated[Settings, Depends(config)]) -> Verifier:
-    global _verifier
-    if _verifier is None:
-        _verifier = Verifier(
-            audience=cfg.audience,
-            allowed_repos=cfg.allowed_repos,
-            default_branch=cfg.default_branch,
-        )
-    return _verifier
-
-
-def github(cfg: Annotated[Settings, Depends(config)]) -> GitHubApp | None:
-    global _github
-    if _github is not None:
-        return _github
-    if cfg.github_dry_run:
-        _github = NullGitHubApp()
-    elif cfg.github_app_id and cfg.github_private_key:
-        _github = GitHubApp(
-            cfg.github_app_id, cfg.github_private_key, cfg.github_installation_id
-        )
-    return _github
-
-
-def attestor(gh: Annotated[GitHubApp | None, Depends(github)]) -> RunAttestor:
-    if isinstance(gh, NullGitHubApp):
-        raise HTTPException(
-            503, "lease path unavailable: GitHub is in dry-run mode"
-        )
-    if gh is None:
-        # Without GitHub credentials the fork path cannot verify anything, and
-        # accepting unverified claims would be strictly worse than refusing.
-        raise HTTPException(503, "lease path unavailable: no GitHub app configured")
-    return RunAttestor(gh)
-
 
 def client_address(request: Request, cfg: Settings) -> str:
     """Best available identifier for the caller.
@@ -212,6 +168,9 @@ def identity(
         )
 
     raise HTTPException(401, "unrecognised credential")
+
+
+app.include_router(grafana.router)
 
 
 @app.get("/healthz")
