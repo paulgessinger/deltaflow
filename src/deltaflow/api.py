@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import statistics
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -36,8 +37,9 @@ from .config import Settings, settings
 from .db import init_db, session
 from .github import GitHubApp
 from .models import ApiToken, Context, Lease, Measurement, Report, Trust, series_key
-from .queries import baseline_points, head_series
+from .queries import baseline_points, head_series, machine_scatter, run_points
 from .schemas import ClaimIn, ClaimOut, SubmissionIn, SubmissionOut
+from .stats import estimate
 
 log = logging.getLogger("deltaflow")
 
@@ -274,6 +276,7 @@ def submit(
                 value=value,
                 rep=i,
                 role=m.role.value,
+                deterministic=m.deterministic,
                 position=m.position.value if m.position else "",
                 group=m.group or job,
                 context=who.context.value,
@@ -380,6 +383,66 @@ def series(
             }
             for s in head_series(db, repo, head_sha)
         ],
+    }
+
+
+@app.get("/v1/timeseries")
+def timeseries(
+    repo: str,
+    series: str,
+    db: Annotated[Session, Depends(session)],
+    cfg: Annotated[Settings, Depends(config)],
+    window: int | None = None,
+) -> dict:
+    """A series' history as points with one-sigma bars, oldest first.
+
+    Shaped for a dashboard to draw `value` as a line and `value ± sigma` as a
+    band. The bar is computed per point from that run's own repetitions and
+    reference bracket, so a run measured on a misbehaving machine widens where
+    it actually happened rather than smearing the whole series.
+    """
+    size = window or cfg.baseline_window
+    points = run_points(db, repo, series, size)
+
+    # Machine scatter is a property of the machine over the window, not of any
+    # one run, so it is computed once and applied to every point.
+    levels = [p.bracket.level for p in points if p.bracket]
+    scatter = machine_scatter(levels)
+    norm = statistics.median(levels) if levels else None
+
+    out = []
+    for point in points:
+        drift = None
+        if point.bracket and norm:
+            drift = (point.bracket.level - norm) / abs(norm) * 100.0
+        unc = estimate(
+            point.reps,
+            instability_pct=point.bracket.instability if point.bracket else None,
+            machine_scatter=scatter,
+            drift_pct=drift,
+        )
+        out.append(
+            {
+                "head_sha": point.head_sha,
+                "timestamp": point.created_at.isoformat(),
+                "value": unc.value,
+                "sigma": unc.absolute,
+                "lower": unc.value - unc.absolute,
+                "upper": unc.value + unc.absolute,
+                "reps": len(point.reps),
+                "components": {
+                    "repetition": unc.repetition,
+                    "instability": unc.instability,
+                    "machine": unc.machine,
+                },
+            }
+        )
+
+    return {
+        "repo": repo,
+        "series": series,
+        "machine_scatter": scatter,
+        "points": out,
     }
 
 

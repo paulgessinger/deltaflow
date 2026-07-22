@@ -122,6 +122,8 @@ class Measurement(Base):
 
     # --- reference bracketing --------------------------------------------
     role: Mapped[Role] = mapped_column(String(16), default=Role.PAYLOAD, index=True)
+    # Machine variation is excluded from this metric's uncertainty.
+    deterministic: Mapped[bool] = mapped_column(default=False)
     # Empty string, never NULL: this column is part of the dedup constraint,
     # and SQL treats NULLs as distinct from one another, so a nullable column
     # here would silently stop every payload row from deduplicating.

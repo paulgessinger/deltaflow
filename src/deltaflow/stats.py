@@ -16,6 +16,7 @@ Two properties are non-negotiable even in v1:
 from __future__ import annotations
 
 import dataclasses
+import math
 import statistics
 from collections.abc import Sequence
 
@@ -36,6 +37,101 @@ DEFAULT_FLOOR_PCT = 1.0
 MIN_BASELINE = 5
 
 _IQR_TO_SIGMA = 0.7413  # 1 / (2 * Phi^-1(0.75)), the normal-consistent scaling
+
+
+# A machine sweeping from `before` to `after` during the payload is modelled as
+# uniform over that interval; a uniform distribution of width w has sigma
+# w/sqrt(12). Cruder alternatives (half-range as 1 sigma) overstate it by ~1.7x.
+_UNIFORM_TO_SIGMA = 1.0 / math.sqrt(12.0)
+
+
+@dataclasses.dataclass(frozen=True)
+class Uncertainty:
+    """A one-sigma bar on a single measured point.
+
+    Three independent contributions, added in quadrature:
+
+    * `repetition` -- spread across repetitions within the job. What the
+      benchmark itself could not pin down.
+    * `instability` -- the machine moved *during* the measurement, so the
+      payload could have landed anywhere across that sweep.
+    * `machine` -- run-to-run machine variability, from the sliding window of
+      reference levels, widened when today's level sits unusually far from it.
+
+    On the third: a machine offset is strictly a bias, not a variance, and
+    folding it into a symmetric bar is a simplification. It is the right one
+    here because the quantity of interest is software cost, and normalising the
+    payload by the reference is explicitly refused -- so a machine running 25%
+    slow makes the point a 25%-worse estimate of the thing we actually want,
+    which is exactly what a wider bar should say.
+    """
+
+    value: float
+    repetition: float = 0.0
+    instability: float = 0.0
+    machine: float = 0.0
+
+    @property
+    def relative(self) -> float:
+        """One sigma, as a fraction of the value."""
+        return math.sqrt(
+            self.repetition**2 + self.instability**2 + self.machine**2
+        )
+
+    @property
+    def absolute(self) -> float:
+        return abs(self.value) * self.relative
+
+    @property
+    def known(self) -> bool:
+        return self.relative > 0.0
+
+
+def repetition_sigma(reps: Sequence[float]) -> float:
+    """Relative spread across repetitions.
+
+    Deliberately *not* divided by sqrt(n). Repetitions inside one job share a
+    machine state, so treating them as independent samples would understate the
+    uncertainty -- often badly, since that shared state is the dominant term.
+    """
+    if len(reps) < 2:
+        return 0.0
+    centre = statistics.median(reps)
+    if centre == 0:
+        return 0.0
+    spread = robust_sigma(reps) if len(reps) >= 4 else statistics.stdev(reps)
+    return spread / abs(centre)
+
+
+def estimate(
+    reps: Sequence[float],
+    instability_pct: float | None = None,
+    machine_scatter: float = 0.0,
+    drift_pct: float | None = None,
+) -> Uncertainty:
+    """Combine the measurement and both machine signals into one bar.
+
+    `machine_scatter` is how much this machine normally varies run to run, as a
+    fraction, taken from the sliding window of reference levels. `drift_pct` is
+    how far it sits from that norm today; the larger of the two wins rather
+    than both being counted, since they describe the same phenomenon.
+    """
+    value = aggregate(reps)
+    instability = (
+        (instability_pct / 100.0) * _UNIFORM_TO_SIGMA
+        if instability_pct is not None
+        else 0.0
+    )
+    machine = machine_scatter
+    if drift_pct is not None:
+        machine = max(machine_scatter, abs(drift_pct) / 100.0)
+
+    return Uncertainty(
+        value=value,
+        repetition=repetition_sigma(reps),
+        instability=instability,
+        machine=machine,
+    )
 
 
 @dataclasses.dataclass(frozen=True)

@@ -231,6 +231,46 @@ machine and is reported as such, next to the payload rather than folded into it.
 Uncertainty is computed dynamically at read time. Because of that, improved
 statistical methods automatically apply to all historical data.
 
+### The one-sigma bar
+
+Every point carries an error bar, combining three independent contributions in
+quadrature:
+
+| Component | Source | Needs history |
+| --- | --- | --- |
+| `repetition` | Spread across repetitions within the job | No |
+| `instability` | The bracket: machine moved *during* the measurement | No |
+| `machine` | Sliding window of reference levels, widened by today's drift | Yes |
+
+Reported as `11.7 s ± 0.494 s` in the comment, and as `value`, `sigma`,
+`lower`, `upper` per point from `/v1/timeseries` so a dashboard can draw a band
+rather than a bare line. Each historical point gets its own bar from *its own*
+run's bracket, so a run measured on a misbehaving machine widens where it
+actually happened instead of smearing the whole series.
+
+Two modelling choices worth recording:
+
+- **Repetition spread is not divided by √n.** Repetitions inside one job share a
+  machine state, so treating them as independent samples would understate the
+  bar — often badly, since that shared state is usually the dominant term.
+- **Instability is treated as a uniform sweep**, contributing `width/√12` rather
+  than its half-range. A machine drifting from `before` to `after` spent time at
+  every speed in between, not only at the extremes.
+- **Drift and machine scatter do not both count.** They describe the same
+  phenomenon at different timescales, so the larger wins.
+
+Folding drift into a symmetric bar is a simplification — a machine offset is
+strictly a bias, not a variance. It is the right simplification here because the
+quantity of interest is *software cost*, and normalising the payload by the
+reference is explicitly refused. A machine running 25% slow makes the point a
+25%-worse estimate of the thing actually wanted, which is what a wider bar
+should say.
+
+**Deterministic metrics carry no machine terms.** Allocation counts and object
+counts do not depend on how fast the CPU ran; only their own repetition spread
+applies, which is normally zero. Submitters mark these with
+`"deterministic": true`.
+
 **There is no automated regression detection, and none is planned as a gate.**
 The report is descriptive: it states the measured value, where that sits
 relative to recent history, and how much the machine moved while measuring. It

@@ -18,6 +18,7 @@ only the fork path needs anything extra in the workflow.
     "metric": "allocations",
     "unit": "count",
     "labels": {"benchmark": "seeding"},
+    "deterministic": true,
     "values": [42017]
   }
 ]
@@ -29,6 +30,11 @@ good. A single value is fine for deterministic metrics.
 
 Labels define series identity. Keep them stable: changing a label starts a new
 series with no history, and there is no way to merge them afterwards.
+
+Mark metrics that do not depend on machine speed with `"deterministic": true` —
+allocation counts, object counts, instruction counts. They then carry no machine
+uncertainty, because none applies: a slow runner does not change how many bytes
+the code allocates.
 
 ## Reference bracketing
 
@@ -57,6 +63,10 @@ This yields two things the payload alone cannot tell you:
   no history, so it works on the very first run.
 - **Drift** — how far the machine sits from its own recent norm, which is what
   catches a hypervisor upgrade or a new runner generation.
+
+Both feed the error bar on every measurement (`11.7 s ± 0.494 s` in the comment,
+`value`/`sigma`/`lower`/`upper` from `/v1/timeseries` for dashboard bands).
+Without a bracket, only repetition spread contributes and the bar understates.
 
 Both halves must be submitted or no bracket is formed. **Label the reference
 with the runner class**: one reference series spanning both GitHub-hosted

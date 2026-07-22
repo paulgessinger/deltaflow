@@ -26,6 +26,12 @@ class MeasurementIn(BaseModel):
     direction: Direction = Direction.LOWER_BETTER
     labels: dict[str, str] = Field(default_factory=dict)
 
+    # Set for metrics that do not depend on how fast the machine is running --
+    # allocation counts, object counts, instruction counts. Machine variation
+    # is then excluded from their uncertainty, because it does not apply: a
+    # slow runner does not change how many bytes the code allocates.
+    deterministic: bool = False
+
     # A reference is a short fixed workload submitted twice, before and after
     # the payload, to quantify how much the machine moved during measurement.
     role: Role = Role.PAYLOAD

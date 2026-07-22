@@ -20,8 +20,14 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .models import Lease, Measurement, Role
-from .queries import Bracket, baseline_points, brackets, head_series
-from .stats import METHOD, aggregate
+from .queries import (
+    Bracket,
+    baseline_points,
+    brackets,
+    head_series,
+    machine_scatter,
+)
+from .stats import METHOD, Uncertainty, aggregate, estimate
 
 # Above this much machine movement across a payload, the measurement is worth
 # distrusting outright. A round number pending real data, not a derived figure.
@@ -52,6 +58,9 @@ class Line:
     # runner generation on GitHub's side -- not the repository.
     drift_pct: float | None = None
     n_drift: int = 0
+    # One-sigma bar on `value`, combining repetition spread, instability and
+    # machine scatter. This is the same quantity a dashboard draws as a band.
+    uncertainty: Uncertainty | None = None
 
 
 @dataclasses.dataclass
@@ -117,6 +126,7 @@ def build(session: Session, repo: str, head_sha: str) -> list[Line]:
         # series is its bracket level, so this needs no special accounting.
         drift = None
         ref_history: list[float] = []
+        scatter = 0.0
         if bracket is not None and bracket.series:
             ref_history = baseline_points(
                 session,
@@ -129,6 +139,18 @@ def build(session: Session, repo: str, head_sha: str) -> list[Line]:
                 norm = statistics.median(ref_history)
                 if norm:
                     drift = (bracket.level - norm) / abs(norm) * 100.0
+                scatter = machine_scatter(ref_history)
+
+        # A deterministic metric is unaffected by how fast the machine ran, so
+        # only its own repetition spread contributes -- which is normally zero.
+        uncertainty = estimate(
+            s.reps,
+            instability_pct=(
+                None if s.deterministic else (bracket.instability if bracket else None)
+            ),
+            machine_scatter=0.0 if s.deterministic else scatter,
+            drift_pct=None if s.deterministic else drift,
+        )
 
         lines.append(
             Line(
@@ -144,6 +166,7 @@ def build(session: Session, repo: str, head_sha: str) -> list[Line]:
                 instability_pct=bracket.instability if bracket else None,
                 drift_pct=drift,
                 n_drift=len(ref_history),
+                uncertainty=uncertainty,
             )
         )
 
@@ -158,6 +181,17 @@ def _labels(labels: dict[str, str]) -> str:
 def _num(value: float, unit: str) -> str:
     formatted = f"{value:,.4g}"
     return f"{formatted} {unit}".strip()
+
+
+def _measured(line: Line) -> str:
+    """Value with its one-sigma bar, in the metric's own units."""
+    base = _num(line.value, line.unit)
+    unc = line.uncertainty
+    if unc is None or not unc.known:
+        return base
+    # Match the bar's precision to its own magnitude rather than the value's,
+    # so a 0.004 s bar does not render as "0 s".
+    return f"{base} ± {unc.absolute:,.3g} {line.unit}".strip()
 
 
 def render(
@@ -181,7 +215,7 @@ def render(
         baseline = _num(ln.baseline, ln.unit) if ln.baseline is not None else "–"
         spread = f"±{ln.spread_pct:.2f}%" if ln.spread_pct is not None else "–"
         out.append(
-            f"| `{ln.metric}` | {_labels(ln.labels)} | {_num(ln.value, ln.unit)} | "
+            f"| `{ln.metric}` | {_labels(ln.labels)} | {_measured(ln)} | "
             f"{delta} | {baseline} {spread} | {ln.n_baseline} |"
         )
 

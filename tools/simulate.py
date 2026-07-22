@@ -112,7 +112,8 @@ def measurements(
             "metric": "allocations",
             "unit": "count",
             "labels": PAYLOAD_LABELS,
-            # Deterministic: unaffected by how fast the machine happens to run.
+            # Unaffected by how fast the machine happens to run.
+            "deterministic": True,
             "values": [round(42000 * payload_truth / 10.0)],
         },
         {
@@ -267,6 +268,17 @@ def cmd_flow(args: argparse.Namespace) -> None:
         ),
     )
 
+    from deltaflow.models import series_key
+    key = series_key(REPO, "runtime", PAYLOAD_LABELS)
+    ts = harness.client.get(
+        "/v1/timeseries", params={"repo": REPO, "series": key}
+    ).json()
+    print(f"timeseries points: {len(ts['points'])}  "
+          f"machine_scatter={ts['machine_scatter']:.4f}")
+    for pt in ts["points"][-3:]:
+        print(f"  {pt['head_sha'][:8]}  {pt['value']:.3f} +- {pt['sigma']:.3f}  "
+              f"[{pt['lower']:.3f}, {pt['upper']:.3f}]")
+    print()
     print(f"database: {db}")
     print(f"injected payload change: {args.effect:+.1%}")
     print(f"machine noise: {args.noise}  seed: {args.seed}")
