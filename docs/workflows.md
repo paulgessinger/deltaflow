@@ -3,6 +3,74 @@
 Three paths exist. `deltaflow submit` picks between the first two automatically;
 only the fork path needs anything extra in the workflow.
 
+## The bundled actions
+
+Three composite actions cover the whole job. Nothing stops you calling the CLI
+directly — they exist so the ordering constraints below are not everyone's
+problem to remember.
+
+| Action | When |
+| --- | --- |
+| `claim-action` | First step. No-ops unless the job is a fork PR. |
+| `reference-action` | Immediately before and immediately after the payload. |
+| `submit-action` | Last step. Merges everything and posts it. |
+
+```yaml
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  id-token: write        # ignored on fork PRs; the claim step covers those
+
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    env:
+      DELTAFLOW_SERVER: https://deltaflow.example.org
+    steps:
+      # First. On a fork PR this reserves the slot; otherwise it does nothing.
+      - uses: acts-project/deltaflow/claim-action@v1
+        with:
+          server: ${{ env.DELTAFLOW_SERVER }}
+
+      - uses: actions/checkout@v5
+
+      - uses: acts-project/deltaflow/reference-action@reference-v1.0.0
+        with:
+          position: before
+          runner: ubuntu-24.04
+
+      - run: ./run-benchmarks.sh > payload.json
+
+      - uses: acts-project/deltaflow/reference-action@reference-v1.0.0
+        with:
+          position: after
+          runner: ubuntu-24.04
+
+      - uses: acts-project/deltaflow/submit-action@v1
+        with:
+          server: ${{ env.DELTAFLOW_SERVER }}
+          results: payload.json
+```
+
+Order is the load-bearing part:
+
+- **Claim first, before checkout.** The window in which something else could
+  take the slot is the time between the job starting and the claim landing.
+  Checking out first widens it for no benefit.
+- **The reference brackets the payload and nothing else.** Put checkout, build
+  and cache restore *before* the `before` half. Work between the halves is work
+  the instability signal attributes to the machine.
+- **Submit once, at the end.** `submit-action` merges the payload with both
+  bracket halves; splitting it into two submissions produces two runs and no
+  bracket.
+
+The payload step is yours: `results` takes whatever files your benchmark binary
+produced, as paths or globs, in the [result format](#result-format).
+
 ## Result format
 
 ```json
@@ -38,24 +106,54 @@ the code allocates.
 
 ## Reference bracketing
 
-Run a short fixed workload (~60s) immediately before and immediately after the
-payload, and submit both with `role: "reference"`:
+Run a short fixed workload immediately before and immediately after the payload.
+The supported way is the bundled action, which downloads a published binary,
+verifies its checksum, runs it, and writes a measurement file:
+
+```yaml
+      - uses: acts-project/deltaflow/reference-action@reference-v1.0.0
+        with:
+          position: before
+          runner: ubuntu-24.04
+
+      - run: ./run-benchmarks.sh > payload.json
+
+      - uses: acts-project/deltaflow/reference-action@reference-v1.0.0
+        with:
+          position: after
+          runner: ubuntu-24.04
+
+      - run: jq -s add deltaflow-reference-*.json payload.json > results.json
+```
+
+Pin the action to an exact `reference-vX.Y.Z`. The binary is built once and
+published as a release asset precisely so that every run measures the same work;
+a floating tag can move under you and put incomparable timings in one series.
+See [reference/README.md](../reference/README.md) for why it is not built at
+benchmark time.
+
+The measurements it emits look like this — nothing stops you producing them
+yourself, but then the stability of the workload is on you:
 
 ```json
 [
   {"metric": "runtime", "unit": "s", "role": "reference", "position": "before",
-   "labels": {"benchmark": "reference-fixed", "runner": "ubuntu-latest"},
-   "values": [60.11, 60.04]},
+   "labels": {"benchmark": "reference-fixed@1", "runner": "ubuntu-24.04"},
+   "values": [3.61, 3.58, 3.62, 3.59, 3.60]},
 
   {"metric": "runtime", "unit": "s",
-   "labels": {"benchmark": "seeding", "runner": "ubuntu-latest"},
+   "labels": {"benchmark": "seeding", "runner": "ubuntu-24.04"},
    "values": [1.204, 1.198, 1.211]},
 
   {"metric": "runtime", "unit": "s", "role": "reference", "position": "after",
-   "labels": {"benchmark": "reference-fixed", "runner": "ubuntu-latest"},
-   "values": [63.98, 64.20]}
+   "labels": {"benchmark": "reference-fixed@1", "runner": "ubuntu-24.04"},
+   "values": [3.84, 3.91, 3.86, 3.88, 3.85]}
 ]
 ```
+
+The `@1` in the benchmark label is the workload generation. It is there so that
+changing the reference starts a new series instead of putting a step into the old
+one, which would read as a hardware change that never happened.
 
 This yields two things the payload alone cannot tell you:
 
@@ -116,6 +214,10 @@ the job really is running before granting it.
 **Claim as the job's first step.** That is the entire point: it shrinks the
 window in which anything else could take the slot from the benchmark's whole
 duration down to a moment.
+
+`claim-action` does this and decides for itself whether a claim is needed — it
+checks whether the job was granted an OIDC token, which is the actual capability
+the choice turns on, rather than reading `head.repo.fork`. The raw equivalent:
 
 ```yaml
 jobs:

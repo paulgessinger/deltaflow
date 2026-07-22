@@ -1,0 +1,191 @@
+name: deltaflow reference
+description: >-
+  Run the deltaflow fixed-work reference workload and emit a measurement file
+  ready for `deltaflow submit`. Invoke once before and once after the payload.
+
+inputs:
+  position:
+    description: 'Which half of the bracket this is: "before" or "after".'
+    required: true
+  version:
+    description: >-
+      Reference binary version. Leave unset. The default is pinned to the
+      release this action was tagged alongside, and overriding it silently puts
+      incomparable timings into one drift series.
+    required: false
+    default: '1.0.0'
+  repeat:
+    description: Repetitions of the fixed workload. Submitted as raw values.
+    required: false
+    default: '5'
+  runner:
+    description: >-
+      Runner class label. One reference series must not span different hardware
+      or drift is meaningless. The default distinguishes hosted from self-hosted
+      and OS from arch, but NOT ubuntu-22.04 from ubuntu-24.04 -- set it
+      explicitly if you run more than one image.
+    required: false
+    default: ''
+  group:
+    description: >-
+      Ties this bracket to the payload it surrounds. Defaults to the job. Set it
+      when one job runs several benchmarks with separate brackets.
+    required: false
+    default: ''
+  output:
+    description: Path for the measurement JSON.
+    required: false
+    default: ''
+  command:
+    description: >-
+      Escape hatch: run this command instead of downloading the published
+      reference binary. It must accept `--repeat N` and print the same JSON
+      object on stdout. Intended for bringing up a platform that has no
+      published asset yet, and for this repo's own tests. Using it in anger
+      hands you the stability problem the published binary exists to solve --
+      the drift signal then fires on toolchain and image changes, which is the
+      one class of change it is there to distinguish from hardware.
+    required: false
+    default: ''
+
+outputs:
+  file:
+    description: Path to the measurement JSON written.
+    value: ${{ steps.emit.outputs.file }}
+  level:
+    description: Median total seconds across repetitions.
+    value: ${{ steps.emit.outputs.level }}
+  checksum:
+    description: >-
+      Workload checksum. Identical on every machine; a mismatch means the
+      workload did not run as intended and the timings must not be trusted.
+    value: ${{ steps.emit.outputs.checksum }}
+  machine:
+    description: CPU model, core count and cgroup quota, as JSON.
+    value: ${{ steps.emit.outputs.machine }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve target
+      id: target
+      if: inputs.command == ''
+      shell: bash
+      env:
+        RUNNER_OS: ${{ runner.os }}
+        RUNNER_ARCH: ${{ runner.arch }}
+      run: |
+        set -euo pipefail
+        case "${RUNNER_OS}-${RUNNER_ARCH}" in
+          Linux-X64) target=x86_64-unknown-linux-musl ;;
+          *)
+            echo "::error::No reference binary is published for ${RUNNER_OS}-${RUNNER_ARCH} yet." >&2
+            echo "Building one locally would defeat the purpose: the reference has to be the same bytes" >&2
+            echo "on every run, or drift measures your toolchain instead of your machine." >&2
+            exit 1
+            ;;
+        esac
+        echo "target=$target" >> "$GITHUB_OUTPUT"
+
+    - name: Download and verify reference binary
+      id: fetch
+      if: inputs.command == ''
+      shell: bash
+      env:
+        # `action_repository` is empty when the action is used from a local
+        # path (`uses: ./reference-action`), which is how this repo tests it.
+        REPO: ${{ github.action_repository || github.repository }}
+        VERSION: ${{ inputs.version }}
+        TARGET: ${{ steps.target.outputs.target }}
+      run: |
+        set -euo pipefail
+        tag="reference-v${VERSION}"
+        asset="deltaflow-reference-${VERSION}-${TARGET}"
+        base="https://github.com/${REPO}/releases/download/${tag}"
+        dir="${RUNNER_TEMP}/deltaflow-reference/${VERSION}"
+        mkdir -p "$dir"
+
+        curl -fsSL --retry 3 --retry-connrefused -o "$dir/$asset" "$base/$asset"
+        curl -fsSL --retry 3 --retry-connrefused -o "$dir/SHA256SUMS" "$base/SHA256SUMS"
+
+        # The release is the pin. Assets on a published release are never
+        # replaced -- see reference/README.md; the release workflow refuses to
+        # publish over an existing tag for exactly this reason.
+        ( cd "$dir" && grep " ${asset}\$" SHA256SUMS | sha256sum -c - )
+
+        chmod +x "$dir/$asset"
+        echo "bin=$dir/$asset" >> "$GITHUB_OUTPUT"
+
+    - name: Run reference workload
+      id: emit
+      shell: bash
+      env:
+        BIN: ${{ steps.fetch.outputs.bin }}
+        COMMAND: ${{ inputs.command }}
+        POSITION: ${{ inputs.position }}
+        REPEAT: ${{ inputs.repeat }}
+        RUNNER_CLASS: ${{ inputs.runner }}
+        GROUP: ${{ inputs.group }}
+        OUTPUT: ${{ inputs.output }}
+        RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        RUNNER_OS: ${{ runner.os }}
+        RUNNER_ARCH: ${{ runner.arch }}
+      run: |
+        set -euo pipefail
+        case "$POSITION" in
+          before|after) ;;
+          *) echo "::error::position must be 'before' or 'after', got '$POSITION'"; exit 1 ;;
+        esac
+
+        runner_class="$RUNNER_CLASS"
+        if [ -z "$runner_class" ]; then
+          runner_class="${RUNNER_ENVIRONMENT}-${RUNNER_OS}-${RUNNER_ARCH}"
+        fi
+
+        out="$OUTPUT"
+        [ -n "$out" ] || out="deltaflow-reference-${POSITION}.json"
+
+        raw="${RUNNER_TEMP}/reference-${POSITION}.raw.json"
+        if [ -n "$COMMAND" ]; then
+          echo "::warning::running a custom reference workload; drift for this series is only as stable as that command"
+          eval "$COMMAND --repeat $REPEAT" > "$raw"
+        else
+          "$BIN" --repeat "$REPEAT" > "$raw"
+        fi
+
+        # Both halves of a bracket must measure the same work, and the checksum
+        # is the only thing that can say so. An empty one means the workload did
+        # not report it, which the reference contract requires.
+        jq -e 'has("checksum") and has("total") and has("reference")' "$raw" > /dev/null || {
+          echo "::error::reference output is missing checksum/total/reference"
+          exit 1
+        }
+
+        jq --arg position "$POSITION" \
+           --arg runner "$runner_class" \
+           --arg group "$GROUP" \
+           '[{
+              metric: "runtime",
+              unit: "s",
+              role: "reference",
+              position: $position,
+              group: $group,
+              labels: { benchmark: .reference, runner: $runner },
+              values: .total
+            }]' "$raw" > "$out"
+
+        level=$(jq '[.total[]] | sort | .[length/2|floor]' "$raw")
+        {
+          echo "file=$out"
+          echo "level=$level"
+          echo "checksum=$(jq -r .checksum "$raw")"
+          echo "machine=$(jq -c .machine "$raw")"
+        } >> "$GITHUB_OUTPUT"
+
+        {
+          echo "### deltaflow reference (${POSITION})"
+          echo
+          echo '```json'
+          cat "$raw"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"

@@ -183,9 +183,12 @@ regression.
 
 ### Runtime Benchmarks
 
-Execution time depends on runner performance. A short reference workload (~60s)
-runs **twice**, immediately before and immediately after the payload benchmark,
-bracketing it.
+Execution time depends on runner performance. A short reference workload runs
+**twice**, immediately before and immediately after the payload benchmark,
+bracketing it. It is a fixed-work binary, built once per release and shipped as
+bytes rather than compiled at benchmark time — otherwise the drift signal fires
+on toolchain bumps, which is the one thing it exists to distinguish from
+hardware. Source, kernel choice and release discipline: [reference/README.md](../reference/README.md).
 
 The reference is **not** used to normalize runtimes. It quantifies variation.
 

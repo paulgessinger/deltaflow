@@ -1,0 +1,8 @@
+# Pinned so that reference-v1.0.0 and reference-v1.0.1 cannot differ in codegen.
+# A reference binary that changes its timing because the compiler improved is a
+# hardware step in the drift series that never happened.
+[toolchain]
+channel = "1.97.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-unknown-linux-musl"]

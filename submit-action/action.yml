@@ -1,0 +1,170 @@
+name: deltaflow submit
+description: >-
+  Merge the payload measurements with the reference bracket halves and post them
+  to deltaflow. Picks a credential automatically: OIDC where the job has it, the
+  lease taken by the claim action where it does not.
+
+inputs:
+  results:
+    description: >-
+      Payload measurement files. Whitespace- or newline-separated; globs are
+      expanded. Each file is a JSON array in the wire format -- one entry per
+      series, carrying every repetition, never a mean.
+    required: true
+  reference:
+    description: >-
+      Glob for the reference bracket halves written by the reference action.
+      Set to an empty string if this job is not bracketed.
+    required: false
+    default: 'deltaflow-reference-*.json'
+  server:
+    description: Base URL of the deltaflow API.
+    required: true
+  audience:
+    description: >-
+      OIDC audience to request. Defaults to the server URL, which is what a
+      deployment normally configures.
+    required: false
+    default: ''
+  head-sha:
+    description: >-
+      Commit the numbers describe. Defaults to the pull request head, falling
+      back to `github.sha` on push. Never `github.sha` on a `pull_request`
+      event: that is the ephemeral merge commit and it is regenerated whenever
+      the base moves.
+    required: false
+    default: ${{ github.event.pull_request.head.sha || github.sha }}
+  base-sha:
+    description: Merge base, used to pick the comparison point.
+    required: false
+    default: ${{ github.event.pull_request.base.sha }}
+  pr:
+    description: Pull request number. Required on the lease path.
+    required: false
+    default: ${{ github.event.pull_request.number }}
+  fail-on-error:
+    description: >-
+      Fail the job if submission fails. Off by default: benchmark reporting is
+      informational and must never be able to break CI.
+    required: false
+    default: 'false'
+  cli:
+    description: Package spec for the deltaflow CLI, passed to `uvx`.
+    required: false
+    default: 'deltaflow'
+
+outputs:
+  file:
+    description: Path to the merged measurement file that was submitted.
+    value: ${{ steps.merge.outputs.file }}
+  series:
+    description: Number of series in the submission.
+    value: ${{ steps.merge.outputs.series }}
+  bracketed:
+    description: '"true" if both bracket halves were present.'
+    value: ${{ steps.merge.outputs.bracketed }}
+
+runs:
+  using: composite
+  steps:
+    - name: Merge measurements
+      id: merge
+      shell: bash
+      env:
+        RESULTS: ${{ inputs.results }}
+        REFERENCE: ${{ inputs.reference }}
+      run: |
+        set -euo pipefail
+
+        # Word-split deliberately: the inputs are lists of paths and globs.
+        # shellcheck disable=SC2206
+        files=()
+        for pattern in $RESULTS $REFERENCE; do
+          matched=( $pattern )
+          for f in "${matched[@]}"; do
+            # A glob that matches nothing stays literal, so test before adding.
+            # `if`, not `&&`: under `set -e` a false test at the end of a loop
+            # body aborts the step.
+            if [ -f "$f" ]; then
+              files+=( "$f" )
+            fi
+          done
+        done
+
+        if [ ${#files[@]} -eq 0 ]; then
+          echo "::error::no measurement files matched. results='$RESULTS' reference='$REFERENCE'"
+          exit 1
+        fi
+
+        printf 'merging:\n'
+        printf '  %s\n' "${files[@]}"
+
+        out="${RUNNER_TEMP}/deltaflow-submission.json"
+        jq -s 'add' "${files[@]}" > "$out"
+
+        # Cheap shape check. A malformed file is worth catching here rather than
+        # as a 422 after the benchmark has already been paid for.
+        jq -e '
+          type == "array"
+          and length > 0
+          and all(.[]; has("metric") and (.values | type == "array" and length > 0))
+        ' "$out" > /dev/null || {
+          echo "::error::measurements are not a non-empty array of {metric, values: [...]}"
+          exit 1
+        }
+
+        before=$(jq '[.[] | select(.role == "reference" and .position == "before")] | length' "$out")
+        after=$(jq '[.[] | select(.role == "reference" and .position == "after")] | length' "$out")
+        bracketed=false
+        if [ "$before" -gt 0 ] && [ "$after" -gt 0 ]; then
+          bracketed=true
+        elif [ "$before" -gt 0 ] || [ "$after" -gt 0 ]; then
+          # Both halves are required or no bracket forms, and the submission
+          # then carries an understated error bar with nothing saying so.
+          echo "::warning::only one half of the reference bracket is present (before=$before after=$after); no bracket will form"
+        fi
+
+        {
+          echo "file=$out"
+          echo "series=$(jq 'length' "$out")"
+          echo "bracketed=$bracketed"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Check for uv
+      id: uv
+      shell: bash
+      run: |
+        set -euo pipefail
+        if command -v uv > /dev/null 2>&1; then
+          echo "present=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "present=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Install uv
+      if: steps.uv.outputs.present == 'false'
+      uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+    - name: Submit
+      shell: bash
+      env:
+        DELTAFLOW_SERVER: ${{ inputs.server }}
+        DELTAFLOW_AUDIENCE: ${{ inputs.audience || inputs.server }}
+        DELTAFLOW_HEAD_SHA: ${{ inputs.head-sha }}
+        DELTAFLOW_BASE_SHA: ${{ inputs.base-sha }}
+        FILE: ${{ steps.merge.outputs.file }}
+        PR: ${{ inputs.pr }}
+        CLI: ${{ inputs.cli }}
+        FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+      run: |
+        set -euo pipefail
+        args=( submit "$FILE" )
+        if [ -n "${PR:-}" ]; then
+          args+=( --pr "$PR" )
+        fi
+        if [ "$FAIL_ON_ERROR" = "true" ]; then
+          args+=( --fail-on-error )
+        fi
+        # DELTAFLOW_LEASE, if the claim action took one, arrives through the job
+        # environment and the CLI reads it from there.
+        uvx "$CLI" "${args[@]}"

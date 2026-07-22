@@ -1,0 +1,20 @@
+[package]
+name = "deltaflow-reference"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.97"
+description = "Fixed-work reference workload for deltaflow bracket measurements"
+license = "MIT"
+publish = false
+
+# Zero dependencies, deliberately. This binary is built once per release and
+# then never rebuilt, so it has to still compile in five years when the next
+# generation is cut. Every crate in the tree is a chance for that to fail.
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

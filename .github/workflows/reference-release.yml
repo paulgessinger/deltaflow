@@ -1,0 +1,127 @@
+# Publishes the reference binary. Triggered only by `reference-v*` tags, so it
+# never fires on a server release.
+#
+# The release IS the pin: `reference-action` downloads by tag and verifies
+# against the SHA256SUMS published here. Assets on a published release must
+# therefore never be replaced -- the job below refuses to publish over an
+# existing release rather than leaving that to discipline.
+name: reference-release
+
+on:
+  push:
+    tags: ['reference-v*']
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write        # create the release and upload assets
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # `gh` below authenticates from GH_TOKEN explicitly, so nothing needs
+          # the credential left in .git/config.
+          persist-credentials: false
+
+      - name: Check tag matches Cargo.toml
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag_version="${REF_NAME#reference-v}"
+          cargo_version=$(grep -m1 '^version = ' reference/Cargo.toml | cut -d'"' -f2)
+          if [ "$tag_version" != "$cargo_version" ]; then
+            echo "::error::tag $REF_NAME does not match reference/Cargo.toml version $cargo_version"
+            exit 1
+          fi
+          echo "VERSION=$cargo_version" >> "$GITHUB_ENV"
+
+      - name: Refuse to republish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$REF_NAME" >/dev/null 2>&1; then
+            echo "::error::release $REF_NAME already exists. Reference assets are immutable:"
+            echo "everyone who pinned this version verified the bytes that are already there."
+            echo "Cut a new version instead."
+            exit 1
+          fi
+
+      - name: Install musl target
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+          rustup target add x86_64-unknown-linux-musl
+          rustc --version
+
+      - name: Build
+        working-directory: reference
+        env:
+          # Baseline x86-64 explicitly. The builder's CPU is not the runner's,
+          # and target-cpu=native here ships illegal instructions to older
+          # hardware.
+          RUSTFLAGS: '-C target-cpu=x86-64'
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+      - name: Verify workload checksum
+        working-directory: reference
+        run: |
+          set -euo pipefail
+          bin=target/x86_64-unknown-linux-musl/release/deltaflow-reference
+          got=$("$bin" --repeat 2 | jq -r .checksum)
+          want=$(tr -d '[:space:]' < CHECKSUM)
+          if [ "$got" != "$want" ]; then
+            echo "::error::workload checksum $got != pinned $want."
+            echo "Either a kernel constant changed (bump WORKLOAD and CHECKSUM together)"
+            echo "or the optimiser is no longer computing what we think it is."
+            exit 1
+          fi
+
+      - name: Stage assets
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          target=x86_64-unknown-linux-musl
+          cp "reference/target/$target/release/deltaflow-reference" \
+             "dist/deltaflow-reference-${VERSION}-${target}"
+          ( cd dist && sha256sum deltaflow-reference-* > SHA256SUMS && cat SHA256SUMS )
+          file "dist/deltaflow-reference-${VERSION}-${target}"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          generation=$(grep -m1 'const WORKLOAD' reference/src/main.rs | tr -d ' ;' | cut -d= -f2)
+          checksum=$(tr -d '[:space:]' < reference/CHECKSUM)
+
+          cat > notes.md <<EOF
+          Fixed-work reference workload for deltaflow bracketing.
+
+          | | |
+          | --- | --- |
+          | Workload generation | \`$generation\` |
+          | Series label | \`reference-fixed@$generation\` |
+          | Workload checksum | \`$checksum\` |
+          | Toolchain | \`$(rustc --version)\` |
+
+          The checksum is identical on every machine. A run reporting a different
+          one did not do the intended work and its timings mean nothing.
+
+          Assets here are immutable — verify against \`SHA256SUMS\`.
+          EOF
+
+          gh release create "$REF_NAME" \
+            --verify-tag \
+            --title "reference $VERSION" \
+            --notes-file notes.md \
+            dist/*

@@ -1,0 +1,120 @@
+# Guards the reference workload on every change to it.
+#
+# The checksum check is the important one. A reference workload whose loops the
+# optimiser deleted still runs, still prints plausible seconds, and still gets
+# submitted -- the number is just meaningless. Pinning the checksum is how that
+# failure becomes loud.
+name: reference-ci
+
+on:
+  pull_request:
+    paths: ['reference/**', 'reference-action/**', '.github/workflows/reference-*.yml']
+  push:
+    branches: [main]
+    paths: ['reference/**', 'reference-action/**', '.github/workflows/reference-*.yml']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install musl target
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+          rustup target add x86_64-unknown-linux-musl
+
+      - name: Format and lint
+        working-directory: reference
+        run: |
+          set -euo pipefail
+          cargo fmt --check
+          cargo clippy --release --locked --all-targets -- -D warnings
+
+      - name: Build
+        working-directory: reference
+        env:
+          RUSTFLAGS: '-C target-cpu=x86-64'
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+      - name: Checksum and static linkage
+        working-directory: reference
+        run: |
+          set -euo pipefail
+          bin=target/x86_64-unknown-linux-musl/release/deltaflow-reference
+
+          # A dynamically linked reference couples its timings to whatever libc
+          # the runner image ships, which is a drift signal that isn't hardware.
+          if ! file "$bin" | grep -q 'statically linked'; then
+            file "$bin"
+            echo "::error::reference binary is not statically linked"
+            exit 1
+          fi
+
+          got=$("$bin" --repeat 2 | jq -r .checksum)
+          want=$(tr -d '[:space:]' < CHECKSUM)
+          echo "checksum: got=$got pinned=$want"
+          if [ "$got" != "$want" ]; then
+            echo "::error::workload checksum changed. If a kernel constant moved, bump WORKLOAD"
+            echo "in src/main.rs and CHECKSUM together -- the label carries the generation, so"
+            echo "old and new timings land in different series instead of one incoherent one."
+            exit 1
+          fi
+
+      # The download path cannot be tested against an unreleased binary, so the
+      # `command` escape hatch points the action at the one just built. Everything
+      # after the download -- shape, labels, bracket halves -- is the real thing.
+      - name: Reference (before)
+        uses: ./reference-action
+        with:
+          position: before
+          repeat: '2'
+          runner: ci-smoke
+          command: reference/target/x86_64-unknown-linux-musl/release/deltaflow-reference
+
+      - name: Reference (after)
+        uses: ./reference-action
+        with:
+          position: after
+          repeat: '2'
+          runner: ci-smoke
+          command: reference/target/x86_64-unknown-linux-musl/release/deltaflow-reference
+
+      - name: Check emitted measurements
+        run: |
+          set -euo pipefail
+          jq -e '
+            length == 1
+            and .[0].role == "reference"
+            and .[0].labels.benchmark == "reference-fixed@1"
+            and .[0].labels.runner == "ci-smoke"
+            and (.[0].values | length) == 2
+            and (.[0].values | all(. > 0))
+          ' deltaflow-reference-before.json
+          jq -e '.[0].position == "after"' deltaflow-reference-after.json
+
+      # The merge is where a bracket silently fails to form, so assert both
+      # halves survive into what would be submitted.
+      - name: Exercise the submit merge
+        run: |
+          set -euo pipefail
+          echo '[{"metric":"runtime","unit":"s","labels":{"benchmark":"payload"},"values":[1.0]}]' > payload.json
+          jq -s add payload.json deltaflow-reference-*.json > merged.json
+          jq -e '
+            length == 3
+            and ([.[] | select(.position == "before")] | length) == 1
+            and ([.[] | select(.position == "after")] | length) == 1
+          ' merged.json

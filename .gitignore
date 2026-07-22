@@ -7,3 +7,6 @@ __pycache__/
 *.db-shm
 .env
 dist/
+
+# Rust reference workload
+reference/target/

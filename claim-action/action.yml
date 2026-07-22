@@ -1,0 +1,164 @@
+name: deltaflow claim
+description: >-
+  Reserve this job's submission slot on the fork pull request path. Run it as
+  the job's FIRST step -- that is the entire point of claiming.
+
+# Why this exists as its own action rather than a line in `submit`:
+#
+# A fork job holds no credential, so the server has to verify with GitHub that
+# the job is genuinely running before it will accept numbers under that
+# identity. Between the job starting and the claim landing, nothing stops
+# something else taking the slot. Claiming first shrinks that window from the
+# whole benchmark duration to a moment. A `submit` that claims late works, but
+# it leaves the slot open for the entire run.
+
+inputs:
+  server:
+    description: Base URL of the deltaflow API.
+    required: true
+  pr:
+    description: >-
+      Pull request number. Defaults to the number on the triggering event, which
+      is right for `pull_request` and `pull_request_target`.
+    required: false
+    default: ${{ github.event.pull_request.number }}
+  head-sha:
+    description: >-
+      Real head commit of the pull request. NOT `github.sha`, which on a
+      `pull_request` event is the throwaway merge commit -- it is regenerated
+      whenever the base branch moves, so rows anchored to it orphan themselves.
+    required: false
+    default: ${{ github.event.pull_request.head.sha }}
+  when:
+    description: >-
+      "auto" claims only when this job cannot mint an OIDC token, which is
+      exactly the fork case. "always" claims unconditionally. "never" is a
+      no-op, useful for switching the step off from a matrix expression.
+    required: false
+    default: auto
+  cli:
+    description: >-
+      Package spec for the deltaflow CLI, passed to `uvx`. Override to test an
+      unreleased server against an unreleased client.
+    required: false
+    default: 'deltaflow'
+  fail-on-error:
+    description: >-
+      Fail the job if the claim cannot be made. Off by default so that a
+      deltaflow outage cannot break someone's build -- but note that a *taken*
+      slot (409) always fails regardless: that is not an outage, it is either a
+      duplicate job or someone submitting under your identity, and it must be
+      loud.
+    required: false
+    default: 'false'
+
+outputs:
+  claimed:
+    description: '"true" if a lease was taken, "false" if the step decided not to.'
+    value: ${{ steps.claim.outputs.claimed }}
+
+runs:
+  using: composite
+  steps:
+    - name: Decide
+      id: decide
+      shell: bash
+      env:
+        WHEN: ${{ inputs.when }}
+      run: |
+        set -euo pipefail
+        case "$WHEN" in
+          never)  run=false ;;
+          always) run=true ;;
+          auto)
+            # The presence of these two is precisely "this job was granted
+            # id-token: write", which forks never are. Testing that beats
+            # testing `head.repo.fork`, because it is the actual capability the
+            # decision turns on.
+            if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+              echo "OIDC is available to this job; no lease needed."
+              run=false
+            else
+              run=true
+            fi
+            ;;
+          *) echo "::error::when must be auto, always or never, got '$WHEN'"; exit 1 ;;
+        esac
+        echo "run=$run" >> "$GITHUB_OUTPUT"
+
+    - name: Check for uv
+      id: uv
+      if: steps.decide.outputs.run == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        if command -v uv > /dev/null 2>&1; then
+          echo "present=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "present=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Install uv
+      if: steps.decide.outputs.run == 'true' && steps.uv.outputs.present == 'false'
+      uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+    - name: Claim slot
+      id: claim
+      if: steps.decide.outputs.run == 'true'
+      shell: bash
+      env:
+        DELTAFLOW_SERVER: ${{ inputs.server }}
+        DELTAFLOW_HEAD_SHA: ${{ inputs.head-sha }}
+        PR: ${{ inputs.pr }}
+        CLI: ${{ inputs.cli }}
+        FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+      run: | # zizmor: ignore[github-env] lease shape is validated before export
+        set -euo pipefail
+        if [ -z "${DELTAFLOW_HEAD_SHA:-}" ] || [ -z "${PR:-}" ]; then
+          echo "::error::head-sha and pr are required on the lease path."
+          echo "On a workflow that is not triggered by a pull_request event you must pass both."
+          exit 1
+        fi
+
+        err="${RUNNER_TEMP}/deltaflow-claim.err"
+        set +e
+        secret=$(uvx "$CLI" claim --pr "$PR" 2>"$err")
+        status=$?
+        set -e
+
+        if [ "$status" -ne 0 ]; then
+          cat "$err" >&2
+          # A 409 means the slot is gone. Either two jobs are submitting for one
+          # identity, or someone else is -- neither is something to shrug at, so
+          # it fails whatever fail-on-error says.
+          if grep -qi 'already claimed' "$err"; then
+            echo "::error::benchmark slot already claimed; refusing to continue"
+            exit 1
+          fi
+          echo "::warning::deltaflow claim failed; benchmarks will not be submitted"
+          if [ "$FAIL_ON_ERROR" = "true" ]; then
+            exit 1
+          fi
+          echo "claimed=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # Mask before anything else can echo it. The lease is a bearer secret
+        # for this job's identity for the rest of the run.
+        echo "::add-mask::$secret"
+
+        # The lease reaches the submit step through GITHUB_ENV, so the server's
+        # response is untrusted input to an environment file. A newline in it
+        # would let a hostile (or compromised) server set arbitrary variables --
+        # PATH, say -- for every later step in the job. Constrain the shape to
+        # one line of token characters before it goes anywhere near the file.
+        # `secrets.token_urlsafe` (auth.py) is base64url: A-Za-z0-9 plus - and _.
+        # The rest of the class is slack for a future token format; what matters
+        # is that no newline can get through.
+        if ! printf '%s' "$secret" | grep -qE '^[A-Za-z0-9._~+/=_-]{16,512}$'; then
+          echo "::error::claim response is not a well-formed lease; refusing to export it"
+          exit 1
+        fi
+        echo "DELTAFLOW_LEASE=$secret" >> "$GITHUB_ENV"
+        echo "claimed=true" >> "$GITHUB_OUTPUT"
+        echo "Claimed benchmark slot for PR #${PR} at ${DELTAFLOW_HEAD_SHA}."
