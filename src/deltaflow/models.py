@@ -210,6 +210,22 @@ class Lease(Base):
     )
 
 
+class RateBucket(Base):
+    """A fixed-window counter for one rate-limit key.
+
+    In the database rather than in memory so limits survive a restart and hold
+    across processes -- an attacker should not be able to reset their budget by
+    waiting for a deploy.
+    """
+
+    __tablename__ = "rate_bucket"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    window_start: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
+    count: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class ApiToken(Base):
     """Scoped credential for submitters outside GitHub Actions.
 

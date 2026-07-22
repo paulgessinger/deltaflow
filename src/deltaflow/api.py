@@ -19,7 +19,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -35,9 +35,10 @@ from .auth import (
 )
 from .config import Settings, settings
 from .db import init_db, session
-from .github import GitHubApp
+from .github import GitHubApp, GitHubError, NullGitHubApp
 from .models import ApiToken, Context, Lease, Measurement, Report, Trust, series_key
 from .queries import baseline_points, head_series, machine_scatter, run_points
+from .ratelimit import Limit, RateLimited, consume, purge
 from .schemas import ClaimIn, ClaimOut, SubmissionIn, SubmissionOut
 from .stats import estimate
 
@@ -94,7 +95,11 @@ def verifier(cfg: Annotated[Settings, Depends(config)]) -> Verifier:
 
 def github(cfg: Annotated[Settings, Depends(config)]) -> GitHubApp | None:
     global _github
-    if _github is None and cfg.github_app_id and cfg.github_private_key:
+    if _github is not None:
+        return _github
+    if cfg.github_dry_run:
+        _github = NullGitHubApp()
+    elif cfg.github_app_id and cfg.github_private_key:
         _github = GitHubApp(
             cfg.github_app_id, cfg.github_private_key, cfg.github_installation_id
         )
@@ -102,11 +107,47 @@ def github(cfg: Annotated[Settings, Depends(config)]) -> GitHubApp | None:
 
 
 def attestor(gh: Annotated[GitHubApp | None, Depends(github)]) -> RunAttestor:
+    if isinstance(gh, NullGitHubApp):
+        raise HTTPException(
+            503, "lease path unavailable: GitHub is in dry-run mode"
+        )
     if gh is None:
         # Without GitHub credentials the fork path cannot verify anything, and
         # accepting unverified claims would be strictly worse than refusing.
         raise HTTPException(503, "lease path unavailable: no GitHub app configured")
-    return RunAttestor(gh.installation_token)
+    return RunAttestor(gh)
+
+
+def client_address(request: Request, cfg: Settings) -> str:
+    """Best available identifier for the caller.
+
+    X-Forwarded-For is only consulted when a trusted proxy is declared to be in
+    front. Without one the header is attacker-controlled, and honouring it
+    would make the per-address limit trivially bypassable.
+    """
+    if cfg.trust_forwarded_for:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _enforce_claim_limits(
+    db: Session, cfg: Settings, address: str, repo: str, pr: int
+) -> None:
+    """Charge a claim attempt against every axis it consumes.
+
+    Charged *before* the GitHub calls, so a rejected caller cannot use this
+    endpoint to burn the installation's API budget.
+    """
+    minute = dt.timedelta(minutes=1)
+    hour = dt.timedelta(hours=1)
+    for key, limit in (
+        (f"claim-ip:{address}", Limit(cfg.claim_per_ip_per_minute, minute)),
+        (f"claim-repo:{repo}", Limit(cfg.claim_per_repo_per_minute, minute)),
+        (f"claim-pr:{repo}#{pr}", Limit(cfg.claim_per_pr_per_hour, hour)),
+    ):
+        consume(db, key, limit)
 
 
 def _bearer(authorization: str) -> str:
@@ -182,7 +223,9 @@ def healthz() -> dict[str, str]:
 def claim(
     payload: ClaimIn,
     repo: str,
+    request: Request,
     db: Annotated[Session, Depends(session)],
+    cfg: Annotated[Settings, Depends(config)],
     v: Annotated[Verifier, Depends(verifier)],
     att: Annotated[RunAttestor, Depends(attestor)],
 ) -> ClaimOut:
@@ -194,6 +237,28 @@ def claim(
     """
     if not v.repo_allowed(repo):
         raise HTTPException(403, "repository not permitted")
+
+    try:
+        _enforce_claim_limits(db, cfg, client_address(request, cfg), repo, payload.pr)
+        db.commit()
+    except RateLimited as exc:
+        db.commit()  # keep the charge; the caller still consumed an attempt
+        log.warning("rate limited claim for %s from %s", repo, exc.scope)
+        raise HTTPException(
+            429, str(exc), headers={"Retry-After": str(exc.retry_after)}
+        ) from exc
+
+    live = db.scalar(
+        select(func.count())
+        .select_from(Lease)
+        .where(
+            Lease.repo == repo,
+            Lease.run_id == payload.run_id,
+            Lease.expires_at > dt.datetime.now(dt.UTC),
+        )
+    )
+    if live and live >= cfg.max_leases_per_run:
+        raise HTTPException(429, "too many benchmark jobs claimed for this run")
 
     try:
         att.attest(
@@ -233,12 +298,31 @@ def claim(
             "if this job did not claim it, the claim is not yours",
         ) from exc
 
+    _housekeeping(db)
+
     return ClaimOut(
         secret=secret,
         expires_at=expires.isoformat(),
         pr=payload.pr,
         head_sha=payload.head_sha,
     )
+
+
+def _housekeeping(db: Session) -> None:
+    """Opportunistic cleanup, cheap enough to run on the claim path.
+
+    Expired leases and stale counters would otherwise accumulate forever in a
+    deployment with no scheduled jobs -- which is the deployment this is
+    designed for.
+    """
+    now = dt.datetime.now(dt.UTC)
+    expired = db.scalars(
+        select(Lease).where(Lease.expires_at < now - LEASE_TTL)
+    ).all()
+    for lease in expired:
+        db.delete(lease)
+    purge(db)
+    db.commit()
 
 
 @app.post("/v1/submit", response_model=SubmissionOut)
@@ -259,6 +343,20 @@ def submit(
 
     if who.context is Context.MAINLINE and not who.trust.mainline_eligible:
         raise HTTPException(403, "this credential may not write mainline history")
+
+    lease = _lease_for(db, who)
+    if lease is not None:
+        if lease.submissions >= cfg.max_submissions_per_lease:
+            raise HTTPException(429, "too many submissions under this lease")
+        # Series cardinality is capped per pull request, not globally: a fork
+        # can invent label values freely, and each new combination is a new
+        # series that never merges back.
+        if _would_exceed_series_cap(db, cfg, who, payload):
+            raise HTTPException(
+                429,
+                f"pull request would exceed {cfg.max_series_per_pr} distinct "
+                "series; check for unbounded label values",
+            )
 
     accepted = duplicates = 0
     seen: set[str] = set()
@@ -302,17 +400,8 @@ def submit(
             except IntegrityError:
                 duplicates += 1
 
-    if who.trust is Trust.LEASE:
-        lease = db.scalars(
-            select(Lease).where(
-                Lease.repo == who.repo,
-                Lease.run_id == who.run_id,
-                Lease.run_attempt == who.run_attempt,
-                Lease.job == who.job,
-            )
-        ).one_or_none()
-        if lease is not None:
-            lease.submissions += 1
+    if lease is not None:
+        lease.submissions += 1
 
     db.commit()
 
@@ -326,6 +415,35 @@ def submit(
         context=who.context.value,
         trust=who.trust.value,
     )
+
+
+def _lease_for(db: Session, who: Identity) -> Lease | None:
+    if who.trust is not Trust.LEASE:
+        return None
+    return db.scalars(
+        select(Lease).where(
+            Lease.repo == who.repo,
+            Lease.run_id == who.run_id,
+            Lease.run_attempt == who.run_attempt,
+            Lease.job == who.job,
+        )
+    ).one_or_none()
+
+
+def _would_exceed_series_cap(
+    db: Session, cfg: Settings, who: Identity, payload: SubmissionIn
+) -> bool:
+    existing = set(
+        db.scalars(
+            select(Measurement.series)
+            .where(Measurement.repo == who.repo, Measurement.pr == who.pr)
+            .distinct()
+        ).all()
+    )
+    incoming = {
+        series_key(who.repo, m.metric, m.labels, m.role) for m in payload.measurements
+    }
+    return len(existing | incoming) > cfg.max_series_per_pr
 
 
 def _refresh_comment(
@@ -353,7 +471,11 @@ def _refresh_comment(
 
     if gh is not None:
         try:
-            record.comment_id = gh.upsert_comment(repo, pr, body)
+            # Reuse the known id: far cheaper than scanning, and immune to the
+            # comment falling off the first page of a long discussion.
+            record.comment_id = gh.upsert_comment(
+                repo, pr, body, comment_id=record.comment_id
+            )
         except Exception:
             # Measurements are the durable artefact; the comment is a view of
             # them and can be regenerated. Losing it must not lose data.

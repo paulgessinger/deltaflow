@@ -138,25 +138,21 @@ class RunAttestor:
     not: which run and job it is. GitHub will confirm that for free.
     """
 
-    def __init__(self, api_token_provider, api_base: str = "https://api.github.com"):
-        self._token = api_token_provider
-        self.api = api_base
+    def __init__(self, client):
+        # A GitHubClient: shares the installation token, connection pool, and
+        # retry policy with the comment poster rather than duplicating them.
+        self._client = client
 
     def _get(self, path: str, **params) -> dict:
-        resp = httpx.get(
-            f"{self.api}{path}",
-            headers={
-                "Authorization": f"Bearer {self._token()}",
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
-            params=params or None,
-            timeout=15,
-        )
-        if resp.status_code == 404:
-            raise AuthError("no such run, job, or pull request")
-        resp.raise_for_status()
-        return resp.json()
+        from .github import GitHubError
+
+        try:
+            return self._client.get(path, **params)
+        except GitHubError as exc:
+            # A missing run or pull request is a rejected claim, not an outage.
+            if "not found" in str(exc):
+                raise AuthError("no such run, job, or pull request") from exc
+            raise
 
     def attest(
         self, repo: str, run_id: str, run_attempt: int, job: str, pr: int, head_sha: str

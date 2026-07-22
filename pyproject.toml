@@ -30,3 +30,6 @@ dev = [
 
 [project.scripts]
 deltaflow = "deltaflow.cli:app"
+
+[tool.pytest.ini_options]
+pythonpath = ["tests"]

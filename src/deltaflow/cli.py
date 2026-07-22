@@ -56,6 +56,51 @@ def mint_token(
     typer.echo(secret)
 
 
+github_app = typer.Typer(help="GitHub App diagnostics.", no_args_is_help=True)
+app.add_typer(github_app, name="github")
+
+
+@github_app.command("check")
+def github_check() -> None:
+    """Verify the configured GitHub App credentials and permissions.
+
+    Run this first when standing the app up -- it separates "credentials are
+    wrong" from "the app is not installed on that repository", which are
+    otherwise both a confusing 404 much later.
+    """
+    from .config import settings
+    from .github import GitHubApp, GitHubError
+
+    cfg = settings()
+    if cfg.github_dry_run:
+        typer.echo("dry-run mode: no GitHub credentials in use")
+        raise typer.Exit(0)
+    if not (cfg.github_app_id and cfg.github_private_key):
+        typer.echo("no GitHub App configured; the fork lease path will 503", err=True)
+        raise typer.Exit(1)
+
+    client = GitHubApp(
+        cfg.github_app_id, cfg.github_private_key, cfg.github_installation_id
+    )
+    try:
+        result = client.check()
+    except GitHubError as exc:
+        typer.echo(f"failed: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    typer.echo(f"app:          {result['app']}")
+    typer.echo(f"installation: {result['installation']}")
+
+    for repo in cfg.allowed_repos:
+        if "*" in repo:
+            continue
+        try:
+            client.get(f"/repos/{repo}")
+            typer.echo(f"  {repo}: reachable")
+        except GitHubError:
+            typer.echo(f"  {repo}: NOT reachable — is the app installed there?")
+
+
 def _oidc_token(audience: str) -> str | None:
     """Mint a GitHub Actions OIDC token, or None if this job cannot.
 
