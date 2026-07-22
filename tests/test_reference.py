@@ -53,8 +53,10 @@ def add(
     run=None,
     group="",
 ):
-    labels = labels if labels is not None else (
-        REF_LABELS if role is Role.REFERENCE else PAYLOAD_LABELS
+    labels = (
+        labels
+        if labels is not None
+        else (REF_LABELS if role is Role.REFERENCE else PAYLOAD_LABELS)
     )
     key = series_key(REPO, "runtime", labels, role)
     for i, v in enumerate(values):
@@ -85,11 +87,25 @@ def add(
 
 
 def bracketed(db, sha, before, after, payload, job="bench", **kw):
-    add(db, sha, [before], role=Role.REFERENCE, position=Position.BEFORE.value,
-        job=job, **kw)
+    add(
+        db,
+        sha,
+        [before],
+        role=Role.REFERENCE,
+        position=Position.BEFORE.value,
+        job=job,
+        **kw,
+    )
     add(db, sha, payload, job=job, **kw)
-    add(db, sha, [after], role=Role.REFERENCE, position=Position.AFTER.value,
-        job=job, **kw)
+    add(
+        db,
+        sha,
+        [after],
+        role=Role.REFERENCE,
+        position=Position.AFTER.value,
+        job=job,
+        **kw,
+    )
 
 
 # --- the bracket itself ------------------------------------------------------

@@ -216,8 +216,13 @@ def test_claim_grants_a_secret(client):
     resp = client.post(
         "/v1/claim",
         params={"repo": REPO},
-        json={"run_id": "99", "run_attempt": 1, "job": "bench", "pr": 7,
-              "head_sha": HEAD},
+        json={
+            "run_id": "99",
+            "run_attempt": 1,
+            "job": "bench",
+            "pr": 7,
+            "head_sha": HEAD,
+        },
     )
     assert resp.status_code == 200
     assert resp.json()["secret"]
@@ -226,8 +231,7 @@ def test_claim_grants_a_secret(client):
 def test_second_claim_on_the_same_slot_conflicts(client):
     """Losing this race must be loud, not silent."""
     use_attestor(StubAttestor())
-    body = {"run_id": "99", "run_attempt": 1, "job": "bench", "pr": 7,
-            "head_sha": HEAD}
+    body = {"run_id": "99", "run_attempt": 1, "job": "bench", "pr": 7, "head_sha": HEAD}
     assert client.post("/v1/claim", params={"repo": REPO}, json=body).status_code == 200
     second = client.post("/v1/claim", params={"repo": REPO}, json=body)
     assert second.status_code == 409
@@ -246,8 +250,13 @@ def test_claim_is_refused_when_github_disagrees(client):
     resp = client.post(
         "/v1/claim",
         params={"repo": REPO},
-        json={"run_id": "99", "run_attempt": 1, "job": "bench", "pr": 7,
-              "head_sha": HEAD},
+        json={
+            "run_id": "99",
+            "run_attempt": 1,
+            "job": "bench",
+            "pr": 7,
+            "head_sha": HEAD,
+        },
     )
     assert resp.status_code == 403
 
@@ -257,7 +266,12 @@ def test_claim_is_refused_for_a_foreign_repository(client):
     resp = client.post(
         "/v1/claim",
         params={"repo": "attacker/evil"},
-        json={"run_id": "99", "run_attempt": 1, "job": "bench", "pr": 7,
-              "head_sha": HEAD},
+        json={
+            "run_id": "99",
+            "run_attempt": 1,
+            "job": "bench",
+            "pr": 7,
+            "head_sha": HEAD,
+        },
     )
     assert resp.status_code == 403

@@ -194,9 +194,7 @@ def _measured(line: Line) -> str:
     return f"{base} ± {unc.absolute:,.3g} {line.unit}".strip()
 
 
-def render(
-    lines: list[Line], head_sha: str, progress: Progress | None = None
-) -> str:
+def render(lines: list[Line], head_sha: str, progress: Progress | None = None) -> str:
     cfg = settings()
     out: list[str] = ["### Benchmark report", ""]
 

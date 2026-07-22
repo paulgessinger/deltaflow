@@ -140,19 +140,29 @@ class FakeGitHub:
     """Minimal stand-in for the endpoints RunAttestor consults."""
 
     def __init__(self, run=None, jobs=None, pull=None):
-        self.run = run if run is not None else {
-            "status": "in_progress",
-            "run_attempt": 1,
-            "head_sha": "c" * 40,
-            "head_repository": {"full_name": "contributor/acts"},
-        }
-        self.jobs = jobs if jobs is not None else {
-            "jobs": [{"name": "bench", "status": "in_progress"}]
-        }
-        self.pull = pull if pull is not None else {
-            "state": "open",
-            "head": {"sha": "c" * 40, "repo": {"full_name": "contributor/acts"}},
-        }
+        self.run = (
+            run
+            if run is not None
+            else {
+                "status": "in_progress",
+                "run_attempt": 1,
+                "head_sha": "c" * 40,
+                "head_repository": {"full_name": "contributor/acts"},
+            }
+        )
+        self.jobs = (
+            jobs
+            if jobs is not None
+            else {"jobs": [{"name": "bench", "status": "in_progress"}]}
+        )
+        self.pull = (
+            pull
+            if pull is not None
+            else {
+                "state": "open",
+                "head": {"sha": "c" * 40, "repo": {"full_name": "contributor/acts"}},
+            }
+        )
 
     def get(self, path, **_params):
         if "/jobs" in path:
@@ -179,7 +189,9 @@ def test_live_job_on_matching_pull_request_is_attested():
 
 
 def test_completed_run_cannot_submit():
-    fake = FakeGitHub(run={"status": "completed", "run_attempt": 1, "head_sha": "c" * 40})
+    fake = FakeGitHub(
+        run={"status": "completed", "run_attempt": 1, "head_sha": "c" * 40}
+    )
     with pytest.raises(AuthError, match="not currently executing"):
         attest(attestor_with(fake))
 
@@ -191,7 +203,9 @@ def test_job_that_is_not_running_cannot_submit():
 
 
 def test_unknown_job_name_cannot_submit():
-    fake = FakeGitHub(jobs={"jobs": [{"name": "something-else", "status": "in_progress"}]})
+    fake = FakeGitHub(
+        jobs={"jobs": [{"name": "something-else", "status": "in_progress"}]}
+    )
     with pytest.raises(AuthError, match="no such job"):
         attest(attestor_with(fake))
 
@@ -206,7 +220,10 @@ def test_stale_commit_cannot_submit():
 
 def test_closed_pull_request_cannot_submit():
     fake = FakeGitHub(
-        pull={"state": "closed", "head": {"sha": "c" * 40, "repo": {"full_name": "x/y"}}}
+        pull={
+            "state": "closed",
+            "head": {"sha": "c" * 40, "repo": {"full_name": "x/y"}},
+        }
     )
     with pytest.raises(AuthError, match="not open"):
         attest(attestor_with(fake))

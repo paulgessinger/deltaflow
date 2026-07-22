@@ -74,9 +74,7 @@ class Uncertainty:
     @property
     def relative(self) -> float:
         """One sigma, as a fraction of the value."""
-        return math.sqrt(
-            self.repetition**2 + self.instability**2 + self.machine**2
-        )
+        return math.sqrt(self.repetition**2 + self.instability**2 + self.machine**2)
 
     @property
     def absolute(self) -> float:
@@ -186,14 +184,26 @@ def compare(
 
     if len(baseline_points) < MIN_BASELINE:
         return Comparison(
-            metric, labels, head, None, None, None, len(baseline_points),
+            metric,
+            labels,
+            head,
+            None,
+            None,
+            None,
+            len(baseline_points),
             "insufficient-data",
         )
 
     centre = statistics.median(baseline_points)
     if centre == 0:
         return Comparison(
-            metric, labels, head, centre, None, None, len(baseline_points),
+            metric,
+            labels,
+            head,
+            centre,
+            None,
+            None,
+            len(baseline_points),
             "insufficient-data",
         )
 
@@ -211,6 +221,12 @@ def compare(
         verdict = "improved"
 
     return Comparison(
-        metric, labels, head, centre, delta_pct, band_pct,
-        len(baseline_points), verdict,
+        metric,
+        labels,
+        head,
+        centre,
+        delta_pct,
+        band_pct,
+        len(baseline_points),
+        verdict,
     )

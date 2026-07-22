@@ -70,7 +70,9 @@ class GitHubApp:
             timeout=15,
         )
         resp.raise_for_status()
-        existing = next((c for c in resp.json() if MARKER in (c.get("body") or "")), None)
+        existing = next(
+            (c for c in resp.json() if MARKER in (c.get("body") or "")), None
+        )
 
         if existing:
             resp = httpx.patch(

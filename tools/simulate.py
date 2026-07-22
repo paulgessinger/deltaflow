@@ -37,7 +37,7 @@ from sqlalchemy.orm import sessionmaker  # noqa: E402
 from deltaflow import api  # noqa: E402
 from deltaflow.auth import new_secret  # noqa: E402
 from deltaflow.config import Settings  # noqa: E402
-from deltaflow.models import ApiToken, Base, Lease  # noqa: E402
+from deltaflow.models import ApiToken, Base  # noqa: E402
 
 REPO = "acts-project/acts"
 REF_LABELS = {"benchmark": "reference-fixed", "runner": "ubuntu-latest"}
@@ -233,9 +233,7 @@ def build_history(
         before, during, after = machine.run()
         harness.submit_mainline(
             sha_for(i),
-            measurements(
-                payload_truth, 1.0, before, during, after, rng, reps, jitter
-            ),
+            measurements(payload_truth, 1.0, before, during, after, rng, reps, jitter),
         )
 
 
@@ -269,15 +267,20 @@ def cmd_flow(args: argparse.Namespace) -> None:
     )
 
     from deltaflow.models import series_key
+
     key = series_key(REPO, "runtime", PAYLOAD_LABELS)
     ts = harness.client.get(
         "/v1/timeseries", params={"repo": REPO, "series": key}
     ).json()
-    print(f"timeseries points: {len(ts['points'])}  "
-          f"machine_scatter={ts['machine_scatter']:.4f}")
+    print(
+        f"timeseries points: {len(ts['points'])}  "
+        f"machine_scatter={ts['machine_scatter']:.4f}"
+    )
     for pt in ts["points"][-3:]:
-        print(f"  {pt['head_sha'][:8]}  {pt['value']:.3f} +- {pt['sigma']:.3f}  "
-              f"[{pt['lower']:.3f}, {pt['upper']:.3f}]")
+        print(
+            f"  {pt['head_sha'][:8]}  {pt['value']:.3f} +- {pt['sigma']:.3f}  "
+            f"[{pt['lower']:.3f}, {pt['upper']:.3f}]"
+        )
     print()
     print(f"database: {db}")
     print(f"injected payload change: {args.effect:+.1%}")
@@ -298,16 +301,18 @@ def cmd_drift(args: argparse.Namespace) -> None:
     db = pathlib.Path(tempfile.mkdtemp()) / "sim.db"
     harness = Harness(db)
 
-    build_history(harness, machine, rng, args.commits, args.payload, args.reps,
-                  args.jitter)
+    build_history(
+        harness, machine, rng, args.commits, args.payload, args.reps, args.jitter
+    )
 
     machine.step = math.log(1 + args.hardware_step)
     sha = sha_for(9999)
     before, during, after = machine.run()
     harness.submit_mainline(
         sha,
-        measurements(args.payload, 1.0, before, during, after, rng, args.reps,
-                     args.jitter),
+        measurements(
+            args.payload, 1.0, before, during, after, rng, args.reps, args.jitter
+        ),
     )
 
     print(f"injected hardware step: {args.hardware_step:+.1%}")
@@ -320,18 +325,27 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--commits", type=int, default=40)
-    parser.add_argument("--noise", type=float, default=0.03,
-                        help="Machine speed noise, log-space sigma per tick.")
-    parser.add_argument("--jitter", type=float, default=0.01,
-                        help="Per-repetition measurement jitter.")
+    parser.add_argument(
+        "--noise",
+        type=float,
+        default=0.03,
+        help="Machine speed noise, log-space sigma per tick.",
+    )
+    parser.add_argument(
+        "--jitter", type=float, default=0.01, help="Per-repetition measurement jitter."
+    )
     parser.add_argument("--reps", type=int, default=5)
     parser.add_argument("--payload", type=float, default=10.0)
 
     sub = parser.add_subparsers(dest="command", required=True)
 
     flow = sub.add_parser("flow", help="Mainline history, then a pull request.")
-    flow.add_argument("--effect", type=float, default=0.15,
-                      help="True payload change on the PR, e.g. 0.15 for +15%%.")
+    flow.add_argument(
+        "--effect",
+        type=float,
+        default=0.15,
+        help="True payload change on the PR, e.g. 0.15 for +15%%.",
+    )
     flow.add_argument("--pr", type=int, default=4021)
     flow.add_argument("--db", default=None, help="Directory to keep the database in.")
     flow.set_defaults(func=cmd_flow)

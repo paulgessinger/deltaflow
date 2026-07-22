@@ -181,9 +181,7 @@ class RunAttestor:
             f"/repos/{repo}/actions/runs/{run_id}/attempts/{run_attempt}/jobs",
             per_page=100,
         )
-        match = next(
-            (j for j in jobs.get("jobs", []) if j.get("name") == job), None
-        )
+        match = next((j for j in jobs.get("jobs", []) if j.get("name") == job), None)
         if match is None:
             raise AuthError("no such job in this run")
         if match.get("status") != "in_progress":

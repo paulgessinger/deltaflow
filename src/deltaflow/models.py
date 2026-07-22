@@ -206,9 +206,7 @@ class Lease(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint(
-            "repo", "run_id", "run_attempt", "job", name="uq_lease_slot"
-        ),
+        UniqueConstraint("repo", "run_id", "run_attempt", "job", name="uq_lease_slot"),
     )
 
 

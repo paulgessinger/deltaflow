@@ -72,6 +72,7 @@ async def _validation_error(_request: Request, exc: RequestValidationError):
         },
     )
 
+
 _verifier: Verifier | None = None
 _github: GitHubApp | None = None
 
