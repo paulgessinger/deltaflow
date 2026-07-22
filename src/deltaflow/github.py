@@ -153,8 +153,7 @@ class GitHubClient:
 
         assert last is not None
         raise GitHubError(
-            f"{method} {path} failed after {MAX_ATTEMPTS} attempts "
-            f"[{last.status_code}]"
+            f"{method} {path} failed after {MAX_ATTEMPTS} attempts [{last.status_code}]"
         )
 
     @staticmethod

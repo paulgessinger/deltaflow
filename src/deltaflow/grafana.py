@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from .config import Settings
 from .deps import config, session
-from .models import Context, Measurement, Role
+from .models import Measurement, Role
 from .queries import machine_scatter, run_points
 from .stats import estimate
 
@@ -146,6 +146,7 @@ def health() -> dict[str, str]:
     """Grafana tests a datasource by GETting the root."""
     return {"status": "ok"}
 
+
 @router.post("/search")
 def search(
     body: SearchRequest,
@@ -161,6 +162,7 @@ def search(
         needle = body.target.lower()
         names = [n for n in names if needle in n.lower()]
     return names
+
 
 @router.post("/query")
 def query(
@@ -204,17 +206,14 @@ def query(
             # Only emit a band when something actually measured one.
             if any(s > 0 for _, _, s in points):
                 response.append(
-                    _as_series(
-                        base + UPPER, [(t, v + s) for t, v, s in points]
-                    )
+                    _as_series(base + UPPER, [(t, v + s) for t, v, s in points])
                 )
                 response.append(
-                    _as_series(
-                        base + LOWER, [(t, v - s) for t, v, s in points]
-                    )
+                    _as_series(base + LOWER, [(t, v - s) for t, v, s in points])
                 )
 
     return response
+
 
 @router.post("/annotations")
 def annotations(
@@ -254,12 +253,14 @@ def annotations(
             )
     return out
 
+
 @router.post("/tag-keys")
 def tag_keys(db: Annotated[Session, Depends(session)]) -> list[dict[str, str]]:
     keys: set[str] = set()
     for entry in series_catalogue(db).values():
         keys.update(entry["labels"])
     return [{"type": "string", "text": k} for k in sorted(keys)]
+
 
 @router.post("/tag-values")
 def tag_values(
@@ -272,7 +273,6 @@ def tag_values(
         if key in entry["labels"]
     }
     return [{"text": v} for v in sorted(values)]
-
 
 
 def _as_series(name: str, points: list[tuple[int, float]]) -> dict[str, Any]:

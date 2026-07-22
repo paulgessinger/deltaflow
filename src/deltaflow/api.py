@@ -36,7 +36,7 @@ from .auth import (
 from .config import Settings, settings
 from .db import init_db
 from .deps import attestor, config, github, session, verifier
-from .github import GitHubApp, NullGitHubApp
+from .github import GitHubApp
 from .models import ApiToken, Context, Lease, Measurement, Report, Trust, series_key
 from .queries import baseline_points, head_series, machine_scatter, run_points
 from .ratelimit import Limit, RateLimited, consume, purge
@@ -85,6 +85,7 @@ async def _validation_error(_request: Request, exc: RequestValidationError):
             ]
         },
     )
+
 
 def client_address(request: Request, cfg: Settings) -> str:
     """Best available identifier for the caller.
@@ -287,9 +288,7 @@ def _housekeeping(db: Session) -> None:
     designed for.
     """
     now = dt.datetime.now(dt.UTC)
-    expired = db.scalars(
-        select(Lease).where(Lease.expires_at < now - LEASE_TTL)
-    ).all()
+    expired = db.scalars(select(Lease).where(Lease.expires_at < now - LEASE_TTL)).all()
     for lease in expired:
         db.delete(lease)
     purge(db)

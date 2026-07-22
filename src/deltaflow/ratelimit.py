@@ -54,7 +54,9 @@ class Limit:
     @property
     def description(self) -> str:
         seconds = int(self.window.total_seconds())
-        unit = "minute" if seconds == 60 else "hour" if seconds == 3600 else f"{seconds}s"
+        unit = (
+            "minute" if seconds == 60 else "hour" if seconds == 3600 else f"{seconds}s"
+        )
         return f"{self.count} per {unit}"
 
 
@@ -68,7 +70,9 @@ class RateLimited(Exception):
         self.retry_after = retry_after
 
 
-def consume(session: Session, key: str, limit: Limit, now: dt.datetime | None = None) -> None:
+def consume(
+    session: Session, key: str, limit: Limit, now: dt.datetime | None = None
+) -> None:
     """Charge one event against `key`, or raise RateLimited.
 
     Windows are aligned to wall-clock boundaries rather than to first use, so

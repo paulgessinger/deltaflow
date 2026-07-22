@@ -144,9 +144,7 @@ def test_no_band_when_there_is_nothing_to_measure(client):
     with client.sessionmaker() as db:
         for i in range(5):
             add(db, f"{i:040d}", [10.0])
-    body = client.post(
-        "/grafana/query", json={"targets": [{"target": TARGET}]}
-    ).json()
+    body = client.post("/grafana/query", json={"targets": [{"target": TARGET}]}).json()
     assert {s["target"] for s in body} == {TARGET}
 
 
