@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     # would have been posted instead of writing to anyone's pull request.
     github_dry_run: bool = False
 
+    # Apply pending migrations on startup. Convenient for a single-process
+    # deployment; turn it off and run `deltaflow migrate` as a deploy step if
+    # several replicas could ever start at once and race each other.
+    auto_migrate: bool = True
+
     grafana_url: str = ""
 
 

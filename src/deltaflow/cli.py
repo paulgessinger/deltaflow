@@ -27,12 +27,49 @@ def serve(
 
 
 @app.command()
-def initdb() -> None:
-    """Create tables in the configured database."""
-    from .db import init_db
+def migrate(
+    revision: Annotated[
+        str, typer.Argument(help="Target revision, or 'head' for the latest.")
+    ] = "head",
+) -> None:
+    """Bring the database up to (or down to) a schema revision."""
+    from alembic import command
 
-    init_db()
-    typer.echo("schema created")
+    from .db import alembic_config
+
+    cfg = alembic_config()
+    current = _current_revision()
+    if revision != "head" and current and revision < current:
+        command.downgrade(cfg, revision)
+    else:
+        command.upgrade(cfg, revision)
+    typer.echo(f"schema now at {_current_revision() or 'base'}")
+
+
+@app.command("db-status")
+def db_status() -> None:
+    """Report the schema revision the database is on, and whether it is current."""
+    from alembic.script import ScriptDirectory
+
+    from .db import alembic_config
+
+    current = _current_revision()
+    head = ScriptDirectory.from_config(alembic_config()).get_current_head()
+
+    typer.echo(f"database: {current or 'no schema'}")
+    typer.echo(f"latest:   {head}")
+    if current != head:
+        typer.echo("run `deltaflow migrate` to upgrade", err=True)
+        raise typer.Exit(1)
+
+
+def _current_revision() -> str | None:
+    from alembic.runtime.migration import MigrationContext
+
+    from .db import engine
+
+    with engine().connect() as conn:
+        return MigrationContext.configure(conn).get_current_revision()
 
 
 @app.command("mint-token")

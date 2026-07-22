@@ -13,7 +13,9 @@ the code without breaking something subtle.
 $ uv sync
 $ uv run pytest                                    # 79 tests, ~1s
 $ uv run deltaflow serve --reload                  # API on :8000
-$ uv run deltaflow initdb
+$ uv run deltaflow migrate                         # apply schema migrations
+$ uv run deltaflow db-status                       # exits 1 if behind
+$ uv run deltaflow github check                    # verify App credentials
 $ uv run deltaflow mint-token NAME --repo OWNER/REPO
 
 # Local simulation (global flags precede the subcommand)
@@ -36,7 +38,10 @@ quantities behave — it is the fastest feedback loop in the repo.
 | `queries.py` | Read paths, reference brackets, per-run history. |
 | `stats.py` | Aggregation, uncertainty, and unwired verdict machinery. |
 | `reporting.py` | Builds and renders the pull request comment. |
-| `github.py` | GitHub App client; comment upsert. |
+| `github.py` | GitHub App client; comment upsert, retries. |
+| `grafana.py` | Grafana JSON datasource endpoints. |
+| `ratelimit.py` | Fixed-window counters for the uncredentialed claim path. |
+| `deps.py` | Shared FastAPI dependencies. Tests override these by identity. |
 
 ## Invariants — do not break these
 
@@ -107,12 +112,30 @@ baseline.
 - Comments explain *why*, especially where a choice looks arbitrary but is
   load-bearing.
 
+## Schema changes
+
+Migrations are Alembic, shipped inside the package so `deltaflow migrate` works
+from an installed wheel. `render_as_batch` is on because SQLite cannot ALTER
+most things in place.
+
+After changing `models.py`:
+
+```console
+$ uv run alembic revision --autogenerate -m "what changed"
+$ uv run deltaflow migrate
+```
+
+`tests/test_migrations.py` fails if migrations and models ever disagree, which
+is the failure mode worth catching — a drifted migration breaks at query time,
+far from the cause. `create_all()` still exists for tests and the simulator,
+which build a database from nothing and discard it.
+
 ## Known gaps
 
-- **No rate limiting on `/v1/claim`** — uncredentialed by necessity. Blocks
-  deployment.
-- `/v1/timeseries` returns its own JSON shape, not the Grafana datasource
-  contract. Nothing renders yet.
-- No migrations; schema comes from `create_all`.
 - `UNSTABLE_PCT` (5%) and `DRIFT_PCT` (10%) in `reporting.py` are round numbers,
   not derived. They want calibrating against real runner noise.
+- Nothing has run against a live GitHub App yet. `tests/fake_github.py` covers
+  the protocol; `deltaflow github check` is the first thing to run against real
+  credentials.
+- Per-IP rate limiting is defence in depth only. A reverse proxy should be the
+  primary control — see the note at the top of `ratelimit.py`.

@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
-from deltaflow import api
+from deltaflow import api, deps
 from deltaflow.config import Settings
 from deltaflow.models import Base
 
@@ -38,16 +38,28 @@ def settings():
     )
 
 
+@pytest.fixture(autouse=True)
+def no_ambient_database(monkeypatch):
+    """Keep the app's startup hook away from the configured database.
+
+    The lifespan applies migrations, and under TestClient that would run
+    against whatever DELTAFLOW_DATABASE_URL happens to be set to -- creating a
+    stray file in the repository and coupling the suite to ambient config.
+    Fixtures build their own schema explicitly.
+    """
+    monkeypatch.setattr("deltaflow.api.init_db", lambda: None)
+
+
 @pytest.fixture
 def client(db_sessionmaker, settings):
     def _session():
         with db_sessionmaker() as s:
             yield s
 
-    api.app.dependency_overrides[api.session] = _session
-    api.app.dependency_overrides[api.config] = lambda: settings
-    api.app.dependency_overrides[api.github] = lambda: None
-    api._verifier = None
+    api.app.dependency_overrides[deps.session] = _session
+    api.app.dependency_overrides[deps.config] = lambda: settings
+    api.app.dependency_overrides[deps.github] = lambda: None
+    deps.reset()
     with TestClient(api.app) as c:
         c.sessionmaker = db_sessionmaker
         yield c

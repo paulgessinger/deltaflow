@@ -48,7 +48,19 @@ log = logging.getLogger("deltaflow")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    init_db()
+    cfg = settings()
+    if cfg.auto_migrate:
+        init_db()
+    else:
+        # Serving against a schema older than the code produces confusing
+        # failures deep in a query. Refuse at the door instead.
+        from .db import pending_migrations
+
+        if pending := pending_migrations():
+            raise RuntimeError(
+                f"database schema is behind by {pending} revision(s); "
+                "run `deltaflow migrate`"
+            )
     yield
 
 

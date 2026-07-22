@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "alembic>=1.18.5",
     "fastapi>=0.139.2",
     "httpx>=0.28.1",
     "pydantic>=2",
@@ -30,6 +31,14 @@ dev = [
 
 [project.scripts]
 deltaflow = "deltaflow.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/deltaflow"]
+
+# Migrations are data files inside the package; without this they are absent
+# from an installed wheel and `deltaflow migrate` fails with a bare "no such
+# script location".
+artifacts = ["src/deltaflow/migrations/**"]
 
 [tool.pytest.ini_options]
 pythonpath = ["tests"]
