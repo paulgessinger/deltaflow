@@ -1,0 +1,23 @@
+# Run with prek: https://github.com/j178/prek
+repos:
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v6.0.0
+  hooks:
+  - id: trailing-whitespace
+  - id: end-of-file-fixer
+  - id: check-yaml
+  - id: check-added-large-files
+
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.15.22
+  hooks:
+  - id: ruff-check
+    args: [--fix]
+  - id: ruff-format
+
+# Lints GitHub Actions workflows. Fails on unpinned `uses:` refs, so this is
+# what keeps the SHA pins from rotting back into tags.
+- repo: https://github.com/zizmorcore/zizmor-pre-commit
+  rev: v1.28.0
+  hooks:
+  - id: zizmor
