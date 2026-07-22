@@ -14,7 +14,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field, field_validator
 
-from .models import Direction
+from .models import Direction, Position, Role
 
 Sha = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
 
@@ -25,6 +25,13 @@ class MeasurementIn(BaseModel):
     unit: Annotated[str, Field(max_length=32)] = ""
     direction: Direction = Direction.LOWER_BETTER
     labels: dict[str, str] = Field(default_factory=dict)
+
+    # A reference is a short fixed workload submitted twice, before and after
+    # the payload, to quantify how much the machine moved during measurement.
+    role: Role = Role.PAYLOAD
+    position: Position | None = None
+    # Which payload this brackets. Defaults to the job.
+    group: Annotated[str, Field(max_length=255)] = ""
 
     @field_validator("values")
     @classmethod

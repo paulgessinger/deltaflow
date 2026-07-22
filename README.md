@@ -55,11 +55,22 @@ The pull request comment is upserted on every submission, so results from any
 number of independent workflows appear incrementally. There is no completion
 detection and no webhook receiver.
 
+Runtime benchmarks are bracketed by a short reference workload run before and
+after the payload. That yields how much the machine moved *during* the
+measurement (no history needed) and how far it sits from its own norm (which
+catches hardware changes underneath you).
+
+The report is **descriptive**: values, change against recent history, and
+machine behaviour. It classifies nothing as a regression.
+
 ## Status
 
-Working end to end. The statistical model (`stats.py`) is deliberately a v1 —
-median plus an IQR-derived band with a relative floor — and wants tuning against
-real history before anyone trusts its verdicts.
+Working end to end. `tools/simulate.py` exercises the whole flow locally against
+SQLite with GitHub stubbed, and is how the machine-variation signals were
+validated.
+
+Thresholds in the report (5% instability, 10% drift) are round numbers pending
+calibration against real runner noise.
 
 ## Development
 

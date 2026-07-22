@@ -183,18 +183,46 @@ regression.
 
 ### Runtime Benchmarks
 
-Execution time depends on runner performance. A reference benchmark runs
-alongside the actual benchmark.
+Execution time depends on runner performance. A short reference workload (~60s)
+runs **twice**, immediately before and immediately after the payload benchmark,
+bracketing it.
 
-The reference benchmark is **not** used to normalize runtimes. It estimates
-current platform noise.
+The reference is **not** used to normalize runtimes. It quantifies variation.
 
-Note the assumption this rests on: that noise scales proportionally between the
-reference and the real benchmark. That fails when their profiles differ — a
-cache-thrashing benchmark and a tight ALU loop do not share a noise
-distribution. Treat it as a hypothesis to validate against real data, not a
-given. This is the one genuinely novel part of the design and no off-the-shelf
-tool implements it.
+Two independent signals come out of the bracket, and they answer different
+questions:
+
+| Signal | Definition | Needs history | Detects |
+| --- | --- | --- | --- |
+| Instability | `\|after − before\| / level` | **No** | The machine moving *during* the measurement |
+| Drift | bracket level vs. the reference series' own recent median | Yes | The machine changing *between* runs |
+
+Instability requiring no history is the valuable property: a variation estimate
+exists from the very first submission, before any baseline has accumulated. On a
+quiet machine it collapses toward zero on its own, with no code change.
+
+Drift is what catches a hypervisor upgrade, a kernel change, or GitHub rolling
+out a different runner generation — a step in the reference under an unchanged
+repository. Since a per-run aggregate of the reference series *is* its bracket
+level, this needs no special accounting: it is `baseline_points` over the
+reference series.
+
+Implementation notes:
+
+- `role` (payload/reference) participates in series identity; `position`
+  (before/after) deliberately does not — the two halves are two samples of one
+  series, not two series.
+- Both halves are required. A job whose after-run was skipped yields no
+  bracket rather than a fabricated estimate.
+- `group` ties a bracket to the payload it surrounds, defaulting to the job.
+  Set it explicitly when a job runs several benchmarks with separate brackets.
+- **Label references by runner class.** A single reference series spanning both
+  GitHub-hosted runners and dedicated hardware makes the drift signal
+  meaningless.
+
+Note what this design does *not* assume: nothing about noise scaling
+proportionally between the reference and the payload. The bracket describes the
+machine and is reported as such, next to the payload rather than folded into it.
 
 ---
 
@@ -203,22 +231,29 @@ tool implements it.
 Uncertainty is computed dynamically at read time. Because of that, improved
 statistical methods automatically apply to all historical data.
 
-v1 is deliberately crude — a robust location estimate (median) with an
-IQR-derived spread and a relative floor. Two properties are non-negotiable even
-in v1:
+**There is no automated regression detection, and none is planned as a gate.**
+The report is descriptive: it states the measured value, where that sits
+relative to recent history, and how much the machine moved while measuring. It
+classifies nothing. A human reads it and decides.
+
+Detection may be added later, for information only. The machinery for it
+(`stats.py` — median location, IQR-derived spread, relative floor) exists and is
+tested but is deliberately not wired into the report. Two properties are
+non-negotiable whenever it is turned on:
 
 - **Robust to outliers.** One CI hiccup in the baseline window must not widen
-  the band enough to hide a real regression.
+  the band enough to hide a real change.
 - **No normality assumption for runtime.** Timing noise is right-skewed and
   one-sided; a slow run is always possible, a negatively-slow one is not.
 
-Worth stealing from Bencher's taxonomy as the model matures: static, percentage,
+Worth stealing from Bencher's taxonomy if that day comes: static, percentage,
 z-score, t-test, log-normal, IQR, delta-IQR, each with min/max sample size and a
 time window.
 
-Because verdicts are computed at read time, a comparison rerun later will not
-reproduce today's answer. Each posted report therefore snapshots its verdict and
-a method version, keeping past decisions auditable without freezing the method.
+Because figures are computed at read time, a report regenerated later will not
+reproduce today's numbers. Each posted report therefore snapshots its content
+and a method version, keeping past statements auditable without freezing the
+method.
 
 ---
 
@@ -230,13 +265,16 @@ or synchronization is required.
 The comment is **upserted**, identified by a hidden marker, and rewritten on
 every submission with everything known so far.
 
-Desired content:
+Content:
 
-- Runtime change
-- Whether the change exceeds statistical uncertainty
-- Memory changes
-- Heap allocation changes
+- Each measured series: value, change against recent mainline, and the recent
+  range for context
+- Machine behaviour per job: instability during the run, drift against the
+  machine's own norm
+- Which jobs have claimed but not yet reported
 - Link to Grafana dashboard
+
+No verdicts, no pass/fail, no gating — see *Statistical Uncertainty*.
 
 ---
 
@@ -271,13 +309,40 @@ jobs reported."
 
 ---
 
+## Local Simulation
+
+`tools/simulate.py` (local tooling, not shipped, not in the CLI) drives the real
+API in-process against a real SQLite file with GitHub stubbed out, so the whole
+flow can be exercised without CI or network.
+
+The machine is modelled as an AR(1) process in log space — real runners have bad
+afternoons, so noise persists across runs rather than resampling independently.
+The reference is sampled at the first and last tick of a run, exactly as
+bracketing samples it in reality.
+
+Validated behaviour, injecting a +25% hardware step under an unchanged payload:
+
+| Injected σ | Instability | Drift (true step +25%) | Payload delta (truth unchanged) |
+| --- | --- | --- | --- |
+| 0.005 | ±1.70% | +25.26% | +24.78% |
+| 0.02 | ±4.94% | +24.26% | +26.01% |
+| 0.05 | ±11.42% | +21.67% | +28.94% |
+| 0.15 | ±32.75% | +13.23% | +38.03% |
+
+Drift recovers the injected step while the machine is quiet and degrades
+gracefully as noise swamps it; instability scales monotonically with σ. The last
+column is the point of the exercise: the payload appears to regress by 25–38%
+in every row while its true cost never changed.
+
+---
+
 ## Open Questions
 
-- Statistical methodology beyond v1 (validate the reference-benchmark
-  assumption first)
+- The `UNSTABLE_PCT` (5%) and `DRIFT_PCT` (10%) thresholds are round numbers,
+  not derived. They want calibrating against real runner noise.
 - Dashboard design
-- PR comment format details
 - Retention and downsampling policy
+- Whether one bracket per job suffices, or benchmarks need individual brackets
 
 ---
 

@@ -63,14 +63,40 @@ class Direction(str, enum.Enum):
     HIGHER_BETTER = "higher_better"
 
 
-def series_key(repo: str, metric: str, labels: dict[str, str]) -> str:
+class Role(str, enum.Enum):
+    """What a measurement is for.
+
+    A REFERENCE is a short, fixed workload run either side of the payload to
+    quantify how much the machine moved while the real benchmark was running.
+    It is never used to normalise the payload -- only to say how much the
+    measurement should be trusted.
+    """
+
+    PAYLOAD = "payload"
+    REFERENCE = "reference"
+
+
+class Position(str, enum.Enum):
+    """Which half of a reference bracket a sample came from."""
+
+    BEFORE = "before"
+    AFTER = "after"
+
+
+def series_key(
+    repo: str, metric: str, labels: dict[str, str], role: Role = Role.PAYLOAD
+) -> str:
     """Stable identity for "the same measurement over time".
 
     Grouping by a JSON column does not index; this hash does. Label order is
     normalised so that submitters cannot accidentally fork a series.
+
+    Role participates in identity so a reference can never collide with a
+    payload. Position deliberately does not: the two halves of a bracket are
+    two samples of one reference series, not two series.
     """
     canonical = json.dumps(
-        {"repo": repo, "metric": metric, "labels": labels},
+        {"repo": repo, "metric": metric, "labels": labels, "role": role.value},
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -93,6 +119,17 @@ class Measurement(Base):
     # --- the number ------------------------------------------------------
     value: Mapped[float] = mapped_column(Float)
     rep: Mapped[int] = mapped_column(Integer, default=0)
+
+    # --- reference bracketing --------------------------------------------
+    role: Mapped[Role] = mapped_column(String(16), default=Role.PAYLOAD, index=True)
+    # Empty string, never NULL: this column is part of the dedup constraint,
+    # and SQL treats NULLs as distinct from one another, so a nullable column
+    # here would silently stop every payload row from deduplicating.
+    position: Mapped[str] = mapped_column(String(8), default="")
+    # Ties a bracket to the payload it surrounds. Defaults to the job, which is
+    # right when a job runs one benchmark; set it explicitly when a job runs
+    # several and each gets its own bracket.
+    group: Mapped[str] = mapped_column(String(255), default="")
 
     # --- provenance ------------------------------------------------------
     context: Mapped[Context] = mapped_column(String(16), index=True)
@@ -128,6 +165,8 @@ class Measurement(Base):
             "series",
             "rep",
             "head_sha",
+            "position",
+            "group",
             name="uq_measurement_dedup",
         ),
         # The query every read path makes: one series' history, newest first.

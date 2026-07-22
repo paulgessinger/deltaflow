@@ -30,6 +30,41 @@ good. A single value is fine for deterministic metrics.
 Labels define series identity. Keep them stable: changing a label starts a new
 series with no history, and there is no way to merge them afterwards.
 
+## Reference bracketing
+
+Run a short fixed workload (~60s) immediately before and immediately after the
+payload, and submit both with `role: "reference"`:
+
+```json
+[
+  {"metric": "runtime", "unit": "s", "role": "reference", "position": "before",
+   "labels": {"benchmark": "reference-fixed", "runner": "ubuntu-latest"},
+   "values": [60.11, 60.04]},
+
+  {"metric": "runtime", "unit": "s",
+   "labels": {"benchmark": "seeding", "runner": "ubuntu-latest"},
+   "values": [1.204, 1.198, 1.211]},
+
+  {"metric": "runtime", "unit": "s", "role": "reference", "position": "after",
+   "labels": {"benchmark": "reference-fixed", "runner": "ubuntu-latest"},
+   "values": [63.98, 64.20]}
+]
+```
+
+This yields two things the payload alone cannot tell you:
+
+- **Instability** — how much the machine moved *during* your measurement. Needs
+  no history, so it works on the very first run.
+- **Drift** — how far the machine sits from its own recent norm, which is what
+  catches a hypervisor upgrade or a new runner generation.
+
+Both halves must be submitted or no bracket is formed. **Label the reference
+with the runner class**: one reference series spanning both GitHub-hosted
+runners and dedicated hardware makes drift meaningless.
+
+If a job runs several benchmarks each with their own bracket, set `group` to tie
+each bracket to its payload. It defaults to the job name.
+
 ## Same-repo pushes and pull requests (OIDC)
 
 ```yaml

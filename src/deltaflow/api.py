@@ -261,7 +261,7 @@ def submit(
     seen: set[str] = set()
 
     for m in payload.measurements:
-        key = series_key(who.repo, m.metric, m.labels)
+        key = series_key(who.repo, m.metric, m.labels, m.role)
         seen.add(key)
         for i, value in enumerate(m.values):
             row = Measurement(
@@ -273,6 +273,9 @@ def submit(
                 labels=m.labels,
                 value=value,
                 rep=i,
+                role=m.role.value,
+                position=m.position.value if m.position else "",
+                group=m.group or job,
                 context=who.context.value,
                 trust=who.trust.value,
                 head_sha=head_sha,

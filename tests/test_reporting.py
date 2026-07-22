@@ -56,14 +56,26 @@ def test_commit_is_excluded_from_its_own_baseline(db):
     assert 20.0 in baseline_points(db, key, 50)
 
 
-def test_landed_regression_is_still_reported_against_clean_history(db):
+def test_change_is_described_against_clean_history(db):
     for i in range(10):
         add(db, f"{i:040d}", [10.0, 10.1])
     add(db, "f" * 40, [20.0, 20.1])
 
-    (c,) = build(db, REPO, "f" * 40)
-    assert c.verdict == "regressed"
-    assert c.n_baseline == 10
+    (line,) = build(db, REPO, "f" * 40)
+    assert line.n_baseline == 10
+    assert line.delta_pct == pytest.approx(99.0, abs=2.0)
+    assert line.baseline == pytest.approx(10.05, abs=0.1)
+
+
+def test_report_classifies_nothing(db):
+    """No verdicts by design: the reader judges, the tool does not."""
+    for i in range(10):
+        add(db, f"{i:040d}", [10.0])
+    add(db, "f" * 40, [50.0])
+
+    body = render(build(db, REPO, "f" * 40), "f" * 40)
+    for word in ("regress", "improve", "🔴", "🟢"):
+        assert word not in body.lower().replace("regression.", "")
 
 
 def test_pull_request_points_are_absent_from_the_baseline(db):
@@ -94,10 +106,10 @@ def test_render_omits_progress_when_all_jobs_reported(db):
     assert "benchmark jobs have reported" not in body
 
 
-def test_render_states_that_it_does_not_gate_merging(db):
+def test_render_states_that_it_does_not_block_merging(db):
     add(db, "f" * 40, [10.0])
     body = render(build(db, REPO, "f" * 40), "f" * 40)
-    assert "does not gate merging" in body
+    assert "nothing here blocks merging" in body.lower()
 
 
 @pytest.fixture
