@@ -49,9 +49,13 @@ inputs:
     required: false
     default: 'false'
   cli:
-    description: Package spec for the deltaflow CLI, passed to `uvx`.
+    description: >-
+      Package spec for the deltaflow CLI, passed to `uvx --from`. Points at the
+      repository until the package is published to PyPI. Keep it identical to
+      the claim action's: a lease minted by one client version and spent by
+      another is asking for a confusing failure mid-run.
     required: false
-    default: 'deltaflow'
+    default: 'git+https://github.com/paulgessinger/deltaflow@main'
 
 outputs:
   file:
@@ -167,4 +171,6 @@ runs:
         fi
         # DELTAFLOW_LEASE, if the claim action took one, arrives through the job
         # environment and the CLI reads it from there.
-        uvx "$CLI" "${args[@]}"
+        # `--from`, so the spec can be a git URL as easily as a package name:
+        # uvx takes a bare first argument as a command, not as a source.
+        uvx --from "$CLI" deltaflow "${args[@]}"

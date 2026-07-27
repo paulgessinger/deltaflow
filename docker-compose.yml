@@ -1,0 +1,80 @@
+# Local bring-up: the API with hot reload, plus Grafana wired to its JSON
+# datasource. Not a production topology -- see docs/deployment.md for that.
+#
+#   cp .env.example .env     # then edit
+#   docker compose up --build
+#
+# The API is on :8000 (point your tunnel here), Grafana on :3000.
+
+services:
+  deltaflow:
+    build:
+      context: .
+      # The dev stage keeps an editable install, so the bind mount below is
+      # what the running process imports.
+      target: dev
+    ports:
+      # Overridable because 8000 is a popular port -- set DF_HOST_PORT in .env
+      # if something local already owns it. Note that Docker Desktop does not
+      # always report the collision: the container comes up healthy and the
+      # published port quietly resolves to the other process instead.
+      # Deliberately not DELTAFLOW_-prefixed: that namespace is the app's
+      # settings, and a stray one there is a configuration error waiting to
+      # happen.
+      - "127.0.0.1:${DF_HOST_PORT:-8000}:8000"
+    volumes:
+      # Source is mounted, not baked: uvicorn --reload restarts on edit.
+      - ./src:/app/src
+      # Handy for driving tools/simulate.py against this container's database.
+      - ./tools:/app/tools
+      - deltaflow-data:/data
+    environment:
+      DELTAFLOW_DATABASE_URL: sqlite:////data/deltaflow.db
+      # Grafana reaches the API over the compose network, so this is the
+      # service name -- not the tunnel URL that GitHub uses.
+      DELTAFLOW_GRAFANA_URL: http://localhost:3000
+      # Bind mounts do not deliver inotify events on Docker Desktop's VM, so
+      # the reloader sees nothing and silently serves stale code -- which looks
+      # exactly like your edit not working. Polling is the fix; it is why
+      # --reload-dir is pinned to /app/src in the Dockerfile's dev stage.
+      WATCHFILES_FORCE_POLLING: "true"
+    env_file:
+      # Everything deployment-specific (audience, allowed repos, GitHub App
+      # credentials) lives here. Absent until you copy .env.example.
+      - path: .env
+        required: false
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    ports:
+      - "127.0.0.1:${DF_GRAFANA_PORT:-3000}:3000"
+    environment:
+      # The SimpleJSON-style datasource deltaflow's /grafana endpoints speak.
+      # grafana-simple-json-datasource is deprecated; this is its maintained
+      # successor and the one the provisioning file below refers to.
+      GF_INSTALL_PLUGINS: simpod-json-datasource
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Editor
+      # Local-only stack; skipping the login wall is worth more than the
+      # protection it offers on a port bound to 127.0.0.1.
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      deltaflow:
+        condition: service_healthy
+
+volumes:
+  deltaflow-data:
+  grafana-data:

@@ -1,0 +1,20 @@
+# Provisioned so a fresh `docker compose up` has a working datasource without
+# anyone clicking through the UI. Grafana re-reads this on start.
+apiVersion: 1
+
+datasources:
+  - name: deltaflow
+    type: simpod-json-datasource
+    uid: deltaflow
+    access: proxy
+    # Grafana calls this from inside the compose network, so it is the service
+    # name and port -- not the host-published port and not the tunnel URL.
+    # The /grafana prefix is where the JSON datasource router is mounted; the
+    # plugin appends /search, /query and /annotations to it.
+    url: http://deltaflow:8000/grafana
+    isDefault: true
+    editable: true
+    jsonData:
+      # The plugin POSTs to /query with a body; keep it on the endpoints the
+      # router actually implements.
+      timeField: time

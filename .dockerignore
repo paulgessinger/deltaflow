@@ -1,0 +1,23 @@
+# The Rust build tree is the big one -- hundreds of megabytes of build context
+# that no stage of the image needs.
+reference/target/
+
+.git/
+.github/
+.venv/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+
+# Never bake a local database or real credentials into an image layer.
+*.db
+*.db-wal
+*.db-shm
+.env
+
+docs/
+tests/
+tools/
+grafana/
+dist/

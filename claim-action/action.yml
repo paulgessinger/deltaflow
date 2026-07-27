@@ -38,10 +38,14 @@ inputs:
     default: auto
   cli:
     description: >-
-      Package spec for the deltaflow CLI, passed to `uvx`. Override to test an
-      unreleased server against an unreleased client.
+      Package spec for the deltaflow CLI, passed to `uvx --from`. Points at the
+      repository until the package is published to PyPI, at which point this
+      becomes the bare name and the pin moves to a version. Pin to a tag or a
+      commit rather than a branch if you need CI that does not move underneath
+      you; override it to test an unreleased server against an unreleased
+      client.
     required: false
-    default: 'deltaflow'
+    default: 'git+https://github.com/paulgessinger/deltaflow@main'
   fail-on-error:
     description: >-
       Fail the job if the claim cannot be made. Off by default so that a
@@ -122,7 +126,9 @@ runs:
 
         err="${RUNNER_TEMP}/deltaflow-claim.err"
         set +e
-        secret=$(uvx "$CLI" claim --pr "$PR" 2>"$err")
+        # `--from`, so the spec can be a git URL as easily as a package name:
+        # uvx takes a bare first argument as a command, not as a source.
+        secret=$(uvx --from "$CLI" deltaflow claim --pr "$PR" 2>"$err")
         status=$?
         set -e
 

@@ -7,13 +7,22 @@ Reports are **informational** and never gate a merge.
 
 - [Design notes](docs/design.md) — architecture, trust model, statistics
 - [Submitting from CI](docs/workflows.md) — workflow snippets and result format
+- [Standing it up](docs/deployment.md) — GitHub App, permissions, first run
 
 ## Quick start
 
 ```console
 $ uv sync
-$ uv run deltaflow initdb
+$ uv run deltaflow migrate
 $ uv run deltaflow serve --reload
+```
+
+Or the whole local stack — API with hot reload, Grafana with its datasource
+already provisioned:
+
+```console
+$ cp .env.example .env
+$ docker compose up --build
 ```
 
 Configuration is via `DELTAFLOW_*` environment variables or a `.env` file:
