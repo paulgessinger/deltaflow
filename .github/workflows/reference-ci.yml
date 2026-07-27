@@ -58,7 +58,11 @@ jobs:
 
           # A dynamically linked reference couples its timings to whatever libc
           # the runner image ships, which is a drift signal that isn't hardware.
-          if ! file "$bin" | grep -q 'statically linked'; then
+          # `file` says "statically linked" for a classic static binary and
+          # "static-pie linked" for a static position-independent one -- which
+          # is what a release musl build now produces. Both are static; only a
+          # "dynamically linked" report is the failure this guards against.
+          if ! file "$bin" | grep -qE 'static(ally|-pie) linked'; then
             file "$bin"
             echo "::error::reference binary is not statically linked"
             exit 1
